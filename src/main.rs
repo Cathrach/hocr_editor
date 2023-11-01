@@ -1,16 +1,18 @@
 use eframe::egui;
 use egui::{FontData, FontDefinitions, FontFamily};
 use itertools::Itertools;
+use lazy_static::lazy_static;
 use rfd::FileDialog;
 use scraper::{ElementRef, Html, Selector};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::str::FromStr;
-use lazy_static::lazy_static;
-use std::cell::RefCell;
 
 lazy_static! {
-    static ref OCR_SELECTOR: Selector = Selector::parse(".ocr_page, .ocr_carea, .ocr_line, .ocr_par, .ocrx_word").unwrap();
+    static ref OCR_SELECTOR: Selector =
+        Selector::parse(".ocr_page, .ocr_carea, .ocr_line, .ocr_par, .ocrx_word, .ocr_caption, .ocr_separator, .ocr_photo").unwrap();
     static ref OCR_WORD_SELECTOR: Selector = Selector::parse(".ocrx_word").unwrap();
     static ref OCR_PAGE_SELECTOR: Selector = Selector::parse(".ocr_page").unwrap();
 }
@@ -24,21 +26,47 @@ fn main() {
     );
 }
 
+#[derive(Default)]
 struct HOCREditor {
     file_path: Option<PathBuf>,
     html_tree: Option<Html>,
+    image_path: Option<String>,
     selected_id: RefCell<String>,
+    file_path_changed: bool,
+}
+
+struct IntPos2 {
+    x: u32,
+    y: u32,
+}
+
+struct BBox {
+    top_left: IntPos2,
+    bottom_right: IntPos2,
+}
+
+enum OCRProperty {
+    BBox(BBox),
+    Image(PathBuf),
+    Float(f32),
+    UInt(u32),
+    Int(i32),
+    Baseline(f32, i32),
+    ScanRes(u32, u32),
 }
 
 // internal representation of a node in the HTML tree containing OCR data
 // TODO: transform the html tree into a tree of these
 // TODO: subclasses because page, word, line have different properties
-struct OCRElement {
-    element_type: OCRClass,
-    // TODO: not use Rect because bounding boxes are integer only
-    bounding_box: egui::Rect,
-    // TODO: apparently lifetime parameter? IDK
-    // element_ref: scraper::ElementRef,
+struct OCRElement<'a> {
+    html_element_type: String,
+    ocr_element_type: OCRClass,
+    id: String,
+    ocr_properties: HashMap<String, OCRProperty>,
+    ocr_text: String,
+    ocr_lang: Option<String>, // only ocr_par has lang I think
+    parent: Option<&'a OCRElement<'a>>,
+    children: Vec<OCRElement<'a>>,
 }
 
 enum OCRClass {
@@ -47,6 +75,9 @@ enum OCRClass {
     Par,
     Line,
     Word,
+    Separator,
+    Photo,
+    Caption,
 }
 
 impl FromStr for OCRClass {
@@ -59,6 +90,9 @@ impl FromStr for OCRClass {
             "ocr_line" => Ok(Self::Line),
             "ocr_par" => Ok(Self::Par),
             "ocrx_word" => Ok(Self::Word),
+            "ocr_photo" => Ok(Self::Photo),
+            "ocr_separator" => Ok(Self::Separator),
+            "ocr_caption" => Ok(Self::Caption),
             _ => Err(()),
         }
     }
@@ -72,6 +106,9 @@ impl ToString for OCRClass {
             Self::Line => "Line".to_string(),
             Self::Par => "Par".to_string(),
             Self::Word => "Word".to_string(),
+            Self::Photo => "Photo".to_string(),
+            Self::Separator => "Separator".to_string(),
+            Self::Caption => "Caption".to_string(),
         }
     }
 }
@@ -117,16 +154,24 @@ fn get_root_text(root: scraper::ElementRef) -> String {
     root.text().filter(|s| !s.trim().is_empty()).join("")
 }
 
-// create a selector for class = ocr_page, ocr_carea, ocr_par, ocr_line, or ocrx_word
+fn get_image(root: scraper::ElementRef) -> String {
+    let ocr_props = root.value().attr("title").unwrap();
+    for pattern in ocr_props.split_terminator(";") {
+        if let Some((prefix, suffix)) = pattern.split_once(" ") {
+            if prefix == "image" {
+                return suffix.to_string();
+            }
+        }
+    }
+    // TODO: error handle
+    return String::new();
+}
 
 impl HOCREditor {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         load_fonts(&cc.egui_ctx);
-        HOCREditor {
-            file_path: None,
-            html_tree: None,
-            selected_id: RefCell::<String>::default(),
-        }
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+        Self::default()
     }
     fn get_ocr_pages(&self) -> Vec<ElementRef<'_>> {
         if let Some(html_tree) = &self.html_tree {
@@ -168,7 +213,11 @@ impl HOCREditor {
                 )
                 .show_header(ui, |ui| {
                     // ui.label(label_text)
-                    ui.selectable_value(&mut *self.selected_id.borrow_mut(), label_id.to_string(), label_text);
+                    ui.selectable_value(
+                        &mut *self.selected_id.borrow_mut(),
+                        label_id.to_string(),
+                        label_text,
+                    );
                 })
                 // - body created by recursively calling renderTree on the children
                 .body(|ui| {
@@ -201,34 +250,25 @@ impl eframe::App for HOCREditor {
                 self.file_path = FileDialog::new()
                     .add_filter("hocr", &["html", "xml", "hocr"])
                     .pick_file();
+                self.file_path_changed = true;
             }
 
-            if let Some(path) = &self.file_path {
-                ui.horizontal(|ui| {
-                    ui.label("Picked file:");
-                    ui.monospace(path.display().to_string());
-                });
-                let html_buffer = read_to_string(path).expect("Failed to read file");
-                self.html_tree = Some(Html::parse_document(&html_buffer));
+            // let's not re-parse the file every frame
+            if self.file_path_changed {
+                if let Some(path) = &self.file_path {
+                    let html_buffer = read_to_string(path).expect("Failed to read file");
+                    self.html_tree = Some(Html::parse_document(&html_buffer));
+                    if !self.get_ocr_pages().is_empty() {
+                        self.image_path = Some(get_image(self.get_ocr_pages()[0]));
+                    }
+                    self.file_path_changed = false;
+                }
             }
 
             ui.label(format!("Selected ID: {}", self.selected_id.borrow()));
-            /*
-            if let Some(html_tree) = &self.html_tree {
-                let ocr_page_sel = Selector::parse(".ocr_page").unwrap();
-                let input = html_tree.select(&ocr_page_sel).next().unwrap();
-                ui.horizontal(|ui| {
-                    if let Some(class) = input.value().attr("class") {
-                        ui.label(class);
-                    }
-                    if let Some(title) = input.value().attr("title") {
-                        ui.label(title);
-                    } else {
-                        ui.label("Couldn't find an ocr_page with title");
-                    }
-                });
+            if let Some(image_path) = &self.image_path {
+                ui.image(image_path);
             }
-            */
         });
     }
 }

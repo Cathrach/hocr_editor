@@ -8,7 +8,9 @@ edition = "2021"
 [dependencies]
 eframe = "0.23.0"
 egui = "0.23.0"
+egui_extras = {version = "0.23.0", features = ["all_loaders"]}
 itertools = "0.11.0"
 lazy_static = "1.4.0"
 rfd = "0.12.1"
 scraper = "0.18.1"
+image = { version = "0.24", features = ["jpeg", "png"] }
