@@ -41,10 +41,28 @@ struct IntPos2 {
     y: u32,
 }
 
+impl IntPos2 {
+    fn to_pos2(&self) -> egui::Pos2 {
+        egui::Pos2 {
+            x: self.x as f32,
+            y: self.y as f32,
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 struct BBox {
     top_left: IntPos2,
     bottom_right: IntPos2,
+}
+
+impl BBox {
+    fn to_rect(&self) -> egui::Rect {
+        egui::Rect {
+            min: self.top_left.to_pos2(),
+            max: self.bottom_right.to_pos2(),
+        }
+    }
 }
 
 enum OCRProperty {
@@ -176,10 +194,19 @@ fn get_bbox(root: scraper::ElementRef) -> BBox {
     for pattern in ocr_props.split_terminator(";") {
         if let Some((prefix, suffix)) = pattern.split_once(" ") {
             if prefix == "bbox" {
-                let coords : Vec<u32> = suffix.split(" ").map(|s| u32::from_str(s).unwrap()).collect();
+                let coords: Vec<u32> = suffix
+                    .split(" ")
+                    .map(|s| u32::from_str(s).unwrap())
+                    .collect();
                 return BBox {
-                    top_left: IntPos2 {x: coords[0], y: coords[1]},
-                    bottom_right: IntPos2 {x: coords[2], y: coords[3]},
+                    top_left: IntPos2 {
+                        x: coords[0],
+                        y: coords[1],
+                    },
+                    bottom_right: IntPos2 {
+                        x: coords[2],
+                        y: coords[3],
+                    },
                 };
             }
         }
@@ -201,6 +228,18 @@ impl HOCREditor {
         }
         Vec::new()
     }
+    fn get_selected_elt(&self) -> Option<ElementRef<'_>> {
+        if !self.selected_id.borrow().is_empty() {
+            let selector = String::from("#") + &self.selected_id.borrow();
+            let id_sel = Selector::parse(selector.as_str()).unwrap();
+            if let Some(html_tree) = &self.html_tree {
+                let mut found_elt = html_tree.select(&id_sel);
+                return found_elt.next();
+            }
+        }
+        return None;
+    }
+
     // TODO: rename
     fn render_tree(&self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -249,9 +288,13 @@ impl HOCREditor {
                     }
                 });
             } else {
+                ui.selectable_value(
+                    &mut *self.selected_id.borrow_mut(),
+                    label_id.to_string(),
+                    get_root_text(root),
+                );
                 // if it is a word, turn root into a selectable value
                 // label: type (word, carea, par, etc.) preview text
-                ui.label(get_root_text(root));
             }
         }
     }
@@ -286,23 +329,23 @@ impl eframe::App for HOCREditor {
                 }
             }
 
-            ui.label(format!("Selected ID: {}", self.selected_id.borrow()));
-            if !self.selected_id.borrow().is_empty() {
-                let selector = String::from("#") + &self.selected_id.borrow();
-                let id_sel = Selector::parse(selector.as_str()).unwrap();
-                if let Some(html_tree) = &self.html_tree {
-                    let mut found_elt = html_tree.select(&id_sel);
-                    if let Some(elt) = found_elt.next() {
-                    let bbox = get_bbox(elt);
-                    ui.label(format!("BBox {:?}", bbox));
-                    }
-                }
-            }
+            // ui.label(format!("Selected ID: {}", self.selected_id.borrow()));
             if let Some(image_path) = &self.image_path {
                 egui::ScrollArea::both().show(ui, |ui| {
                     // ui.image(image_path);
-                    let response = ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
-                    println!("{:?}", response.rect);
+                    let response =
+                        ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
+                    // if we have a selected ID, select it
+                    if let Some(elt) = self.get_selected_elt() {
+                        let bbox = get_bbox(elt);
+                        // to draw the bbox of the selected element, we have to add the x/y coords of the response top left to the bbox rect
+                        ui.painter().rect(
+                            bbox.to_rect().translate(response.rect.min.to_vec2()),
+                            egui::Rounding::ZERO,
+                            egui::Color32::LIGHT_BLUE.gamma_multiply(0.1),
+                            egui::Stroke::new(4.0, egui::Color32::BLACK),
+                        );
+                    }
                 });
             }
         });
