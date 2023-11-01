@@ -26,7 +26,7 @@ fn main() {
     );
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct HOCREditor {
     file_path: Option<PathBuf>,
     html_tree: Option<Html>,
@@ -35,11 +35,13 @@ struct HOCREditor {
     file_path_changed: bool,
 }
 
+#[derive(Default, Debug)]
 struct IntPos2 {
     x: u32,
     y: u32,
 }
 
+#[derive(Default, Debug)]
 struct BBox {
     top_left: IntPos2,
     bottom_right: IntPos2,
@@ -156,21 +158,40 @@ fn get_root_text(root: scraper::ElementRef) -> String {
 
 fn get_image(root: scraper::ElementRef) -> String {
     let ocr_props = root.value().attr("title").unwrap();
+    let mut ret = String::from("file://");
     for pattern in ocr_props.split_terminator(";") {
         if let Some((prefix, suffix)) = pattern.split_once(" ") {
             if prefix == "image" {
-                return suffix.to_string();
+                ret.push_str(suffix.trim_matches('"'));
+                return ret;
             }
         }
     }
     // TODO: error handle
-    return String::new();
+    return ret;
+}
+
+fn get_bbox(root: scraper::ElementRef) -> BBox {
+    let ocr_props = root.value().attr("title").unwrap();
+    for pattern in ocr_props.split_terminator(";") {
+        if let Some((prefix, suffix)) = pattern.split_once(" ") {
+            if prefix == "bbox" {
+                let coords : Vec<u32> = suffix.split(" ").map(|s| u32::from_str(s).unwrap()).collect();
+                return BBox {
+                    top_left: IntPos2 {x: coords[0], y: coords[1]},
+                    bottom_right: IntPos2 {x: coords[2], y: coords[3]},
+                };
+            }
+        }
+    }
+    return BBox::default();
 }
 
 impl HOCREditor {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         load_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        println!("Installed image loaders?");
         Self::default()
     }
     fn get_ocr_pages(&self) -> Vec<ElementRef<'_>> {
@@ -266,8 +287,23 @@ impl eframe::App for HOCREditor {
             }
 
             ui.label(format!("Selected ID: {}", self.selected_id.borrow()));
+            if !self.selected_id.borrow().is_empty() {
+                let selector = String::from("#") + &self.selected_id.borrow();
+                let id_sel = Selector::parse(selector.as_str()).unwrap();
+                if let Some(html_tree) = &self.html_tree {
+                    let mut found_elt = html_tree.select(&id_sel);
+                    if let Some(elt) = found_elt.next() {
+                    let bbox = get_bbox(elt);
+                    ui.label(format!("BBox {:?}", bbox));
+                    }
+                }
+            }
             if let Some(image_path) = &self.image_path {
-                ui.image(image_path);
+                egui::ScrollArea::both().show(ui, |ui| {
+                    // ui.image(image_path);
+                    let response = ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
+                    println!("{:?}", response.rect);
+                });
             }
         });
     }
