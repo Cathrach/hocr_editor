@@ -7,6 +7,7 @@ use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::str::FromStr;
 use lazy_static::lazy_static;
+use std::cell::RefCell;
 
 lazy_static! {
     static ref OCR_SELECTOR: Selector = Selector::parse(".ocr_page, .ocr_carea, .ocr_line, .ocr_par, .ocrx_word").unwrap();
@@ -16,7 +17,7 @@ lazy_static! {
 
 fn main() {
     let options = eframe::NativeOptions::default();
-    eframe::run_native(
+    let _ = eframe::run_native(
         "HOCR Editor",
         options,
         Box::new(|cc| Box::new(HOCREditor::new(cc))),
@@ -26,7 +27,7 @@ fn main() {
 struct HOCREditor {
     file_path: Option<PathBuf>,
     html_tree: Option<Html>,
-    // selected_id: String,
+    selected_id: RefCell<String>,
 }
 
 // internal representation of a node in the HTML tree containing OCR data
@@ -124,7 +125,7 @@ impl HOCREditor {
         HOCREditor {
             file_path: None,
             html_tree: None,
-            // selected_id: String::default(),
+            selected_id: RefCell::<String>::default(),
         }
     }
     fn get_ocr_pages(&self) -> Vec<ElementRef<'_>> {
@@ -140,12 +141,12 @@ impl HOCREditor {
             for ocr_page in self.get_ocr_pages() {
                 // call renderTreeForRoot on each ocr_page
                 // note that the HOCR specification says that ocr_page MUST be present
-                self.render_tree_for_node(ocr_page, ui);
+                self.render_tree_for_root(ocr_page, ui);
             }
         });
     }
     // TODO: rename
-    fn render_tree_for_node(&self, root: scraper::ElementRef, ui: &mut egui::Ui) {
+    fn render_tree_for_root(&self, root: scraper::ElementRef, ui: &mut egui::Ui) {
         // check if root matches the ocr_page, etc. selector
         if OCR_SELECTOR.matches(&root) {
             let ocr_type: OCRClass = root
@@ -166,14 +167,14 @@ impl HOCREditor {
                     false,
                 )
                 .show_header(ui, |ui| {
-                    ui.label(label_text)
-                    // ui.selectable_value(&mut self.selected_id, label_id.to_string(), label_text);
+                    // ui.label(label_text)
+                    ui.selectable_value(&mut *self.selected_id.borrow_mut(), label_id.to_string(), label_text);
                 })
                 // - body created by recursively calling renderTree on the children
                 .body(|ui| {
                     for child in root.children() {
                         if let Some(child_elt) = scraper::ElementRef::wrap(child) {
-                            self.render_tree_for_node(child_elt, ui);
+                            self.render_tree_for_root(child_elt, ui);
                         }
                     }
                 });
@@ -211,6 +212,7 @@ impl eframe::App for HOCREditor {
                 self.html_tree = Some(Html::parse_document(&html_buffer));
             }
 
+            ui.label(format!("Selected ID: {}", self.selected_id.borrow()));
             /*
             if let Some(html_tree) = &self.html_tree {
                 let ocr_page_sel = Selector::parse(".ocr_page").unwrap();
