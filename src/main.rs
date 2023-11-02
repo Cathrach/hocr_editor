@@ -189,6 +189,27 @@ fn get_image(root: scraper::ElementRef) -> String {
     return ret;
 }
 
+fn draw_bbox(root: scraper::ElementRef, offset: egui::Vec2, ui: &mut egui::Ui, is_selected: bool) {
+    let bbox = get_bbox(root);
+    let stroke = if is_selected {
+        egui::Stroke::new(4.0, egui::Color32::BLACK)
+    } else {
+        egui::Stroke::new(4.0, egui::Color32::LIGHT_BLUE)
+    };
+    let fill_color = if is_selected {
+        egui::Color32::LIGHT_BLUE.gamma_multiply(0.1)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    // to draw the bbox of the selected element, we have to add the x/y coords of the response top left to the bbox rect
+    ui.painter().rect(
+        bbox.to_rect().translate(offset),
+        egui::Rounding::ZERO,
+        fill_color,
+        stroke,
+    );
+}
+
 fn get_bbox(root: scraper::ElementRef) -> BBox {
     let ocr_props = root.value().attr("title").unwrap();
     for pattern in ocr_props.split_terminator(";") {
@@ -337,14 +358,13 @@ impl eframe::App for HOCREditor {
                         ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
                     // if we have a selected ID, select it
                     if let Some(elt) = self.get_selected_elt() {
-                        let bbox = get_bbox(elt);
-                        // to draw the bbox of the selected element, we have to add the x/y coords of the response top left to the bbox rect
-                        ui.painter().rect(
-                            bbox.to_rect().translate(response.rect.min.to_vec2()),
-                            egui::Rounding::ZERO,
-                            egui::Color32::LIGHT_BLUE.gamma_multiply(0.1),
-                            egui::Stroke::new(4.0, egui::Color32::BLACK),
-                        );
+                        let offset = response.rect.min.to_vec2();
+                        draw_bbox(elt, offset, ui, true);
+                        for sib_elt in elt.prev_siblings().chain(elt.next_siblings()) {
+                            if let Some(sibling_elt) = scraper::ElementRef::wrap(sib_elt) {
+                                draw_bbox(sibling_elt, offset, ui, false);
+                            }
+                        }
                     }
                 });
             }
