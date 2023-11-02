@@ -15,6 +15,9 @@ lazy_static! {
         Selector::parse(".ocr_page, .ocr_carea, .ocr_line, .ocr_par, .ocrx_word, .ocr_caption, .ocr_separator, .ocr_photo").unwrap();
     static ref OCR_WORD_SELECTOR: Selector = Selector::parse(".ocrx_word").unwrap();
     static ref OCR_PAGE_SELECTOR: Selector = Selector::parse(".ocr_page").unwrap();
+    static ref UNCLICKED_STROKE : egui::Stroke = egui::Stroke::new(STROKE_WEIGHT, egui::Color32::LIGHT_BLUE);
+    static ref CLICKED_STROKE : egui::Stroke = egui::Stroke::new(STROKE_WEIGHT, egui::Color32::BLACK);
+    static ref FOCUS_FILL: egui::Color32 = egui::Color32::LIGHT_BLUE.gamma_multiply(0.3);
 }
 
 fn main() {
@@ -63,6 +66,62 @@ impl BBox {
             max: self.bottom_right.to_pos2(),
         }
     }
+}
+
+// when you select the bbox, you change select_id to assoc_id
+struct SelectableRect {
+    adj_bbox: egui::Rect,
+    selected: bool,
+}
+
+impl SelectableRect {
+    fn new(adj_bbox: egui::Rect, selected: bool) -> Self {
+        Self {
+            adj_bbox: adj_bbox,
+            selected: selected,
+        }
+    }
+}
+
+const STROKE_WEIGHT: f32 = 4.0;
+const UNFOCUS_FILL: egui::Color32 = egui::Color32::TRANSPARENT;
+
+impl egui::Widget for SelectableRect {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let Self { adj_bbox, selected } = self;
+        let response = ui.allocate_rect(adj_bbox, egui::Sense::click());
+        let stroke: egui::Stroke = if selected {
+            *CLICKED_STROKE
+        } else {
+            *UNCLICKED_STROKE
+        };
+        let fill: egui::Color32 = if response.hovered() || selected {
+            *FOCUS_FILL
+        } else {
+            UNFOCUS_FILL
+        };
+        // TODO: widgetinfo
+        if ui.is_rect_visible(response.rect) {
+            ui.painter()
+                .rect(adj_bbox, egui::Rounding::ZERO, fill, stroke);
+        }
+        response.on_hover_and_drag_cursor(egui::CursorIcon::PointingHand)
+    }
+}
+
+// this mimics selectable_value in egui but adapts it to SelectableRect instead of SelectableLabel
+fn selectable_rect<Value: PartialEq>(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    current_value: &mut Value,
+    selected_value: Value,
+) -> egui::Response {
+    let mut response = ui.add(SelectableRect::new(rect, *current_value == selected_value));
+    if response.clicked() && *current_value != selected_value {
+        *current_value = selected_value;
+        response.mark_changed();
+    }
+    response
 }
 
 enum OCRProperty {
@@ -187,27 +246,6 @@ fn get_image(root: scraper::ElementRef) -> String {
     }
     // TODO: error handle
     return ret;
-}
-
-fn draw_bbox(root: scraper::ElementRef, offset: egui::Vec2, ui: &mut egui::Ui, is_selected: bool) {
-    let bbox = get_bbox(root);
-    let stroke = if is_selected {
-        egui::Stroke::new(4.0, egui::Color32::BLACK)
-    } else {
-        egui::Stroke::new(4.0, egui::Color32::LIGHT_BLUE)
-    };
-    let fill_color = if is_selected {
-        egui::Color32::LIGHT_BLUE.gamma_multiply(0.1)
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    // to draw the bbox of the selected element, we have to add the x/y coords of the response top left to the bbox rect
-    ui.painter().rect(
-        bbox.to_rect().translate(offset),
-        egui::Rounding::ZERO,
-        fill_color,
-        stroke,
-    );
 }
 
 fn get_bbox(root: scraper::ElementRef) -> BBox {
@@ -356,17 +394,28 @@ impl eframe::App for HOCREditor {
                     // ui.image(image_path);
                     let response =
                         ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
-                    // if we have a selected ID, select it
+                    // if we have a selected ID, draw bboxes for it and its siblings
                     if let Some(elt) = self.get_selected_elt() {
                         let offset = response.rect.min.to_vec2();
-                        draw_bbox(elt, offset, ui, true);
+                        selectable_rect(
+                            ui,
+                            get_bbox(elt).to_rect().translate(offset),
+                            &mut *self.selected_id.borrow_mut(),
+                            elt.value().attr("id").unwrap().to_string(),
+                        );
                         for sib_elt in elt.prev_siblings().chain(elt.next_siblings()) {
                             if let Some(sibling_elt) = scraper::ElementRef::wrap(sib_elt) {
-                                draw_bbox(sibling_elt, offset, ui, false);
+                                selectable_rect(
+                                    ui,
+                                    get_bbox(sibling_elt).to_rect().translate(offset),
+                                    &mut *self.selected_id.borrow_mut(),
+                                    sibling_elt.value().attr("id").unwrap().to_string(),
+                                );
                             }
                         }
                     }
                 });
+                // TODO: center the bbox when we make the bbox widget using scroll_to_me
             }
         });
     }
