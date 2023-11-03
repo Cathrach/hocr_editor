@@ -1,5 +1,7 @@
 use crate::InternalID;
 use std::collections::HashMap;
+use std::iter;
+use std::slice::Iter;
 
 // the "tree" is a dictionary of IDs to nodes
 #[derive(Default, Debug)]
@@ -130,6 +132,50 @@ impl<D> Tree<D> {
         }
     }
 
+    pub fn children(&self, id: &InternalID) -> Iter<'_, InternalID> {
+        match self.nodes.get(id) {
+            Some(node) => node.children.iter(),
+            None => Default::default(),
+        }
+    }
+
+    pub fn prev_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
+        if let Some(node) = self.nodes.get(id) {
+            let siblings = match node.parent {
+                Some(par_id) => &self.nodes.get(&par_id).unwrap().children,
+                None => &self.roots,
+            };
+            let my_index = siblings.iter().position(|&x| x == *id).unwrap();
+            return siblings[..my_index].iter();
+        } else {
+            return Default::default();
+        }
+    }
+
+    pub fn next_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
+        if let Some(node) = self.nodes.get(id) {
+            let siblings = match node.parent {
+                Some(par_id) => &self.nodes.get(&par_id).unwrap().children,
+                None => &self.roots,
+            };
+            let my_index = siblings.iter().position(|&x| x == *id).unwrap() + 1;
+            return siblings[my_index..].iter();
+        } else {
+            return Default::default();
+        }
+    }
+
+    pub fn has_children(&self, id: &InternalID) -> bool {
+        match self.nodes.get(id) {
+            Some(node) => node.children.len() > 0,
+            None => false,
+        }
+    }
+
+    pub fn roots(&self) -> Iter<'_, InternalID> {
+        self.roots.iter()
+    }
+
     // mutable ref to node val by ID -- used when we need to modify bbox or text
     pub fn get_mut_node(&mut self, id: &InternalID) -> Option<&mut D> {
         match self.nodes.get_mut(id) {
@@ -140,9 +186,11 @@ impl<D> Tree<D> {
 
     // this is only a helper! never call it outside!
     fn delete_child_from_parent(&mut self, par_id: &InternalID, child_id: &InternalID) {
+        let index = self.children(par_id).position(|&x| x == *child_id); // par.children.binary_search(child_id).unwrap();
         let par = self.nodes.get_mut(par_id).unwrap();
-        let index = par.children.binary_search(child_id).unwrap();
-        par.children.remove(index);
+        if let Some(id) = index {
+            par.children.remove(id);
+        }
     }
 
     // helper for delete_node
@@ -168,8 +216,10 @@ impl<D> Tree<D> {
             match parent_id {
                 // node is a root
                 None => {
-                    let index = self.roots.binary_search(id).unwrap();
-                    self.roots.remove(index);
+                    let index = self.roots.iter().position(|&x| x == *id); // self.roots.binary_search(id).unwrap();
+                    if let Some(ind) = index {
+                        self.roots.remove(ind);
+                    }
                 }
                 Some(par_id) => self.delete_child_from_parent(&par_id, id),
             }

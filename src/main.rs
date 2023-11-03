@@ -1,5 +1,3 @@
-use crate::ocr_element::get_root_preview_text;
-use crate::ocr_element::get_root_text;
 use eframe::egui;
 use egui::{FontData, FontDefinitions, FontFamily};
 use lazy_static::lazy_static;
@@ -8,10 +6,11 @@ use scraper::{ElementRef, Html, Selector};
 use std::cell::RefCell;
 
 use std::fs::read_to_string;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::ocr_element::{BBox, IntPos2, OCRClass, OCRElement};
+use crate::ocr_element::{BBox, IntPos2, OCRClass, OCRElement, OCRProperty};
 use crate::ocr_element::{OCR_PAGE_SELECTOR, OCR_SELECTOR, OCR_WORD_SELECTOR};
 use crate::tree::Tree;
 mod ocr_element;
@@ -43,7 +42,7 @@ struct HOCREditor {
     file_path: Option<PathBuf>,
     html_tree: Option<Html>,
     image_path: Option<String>,
-    selected_id: RefCell<String>,
+    selected_id: RefCell<Option<InternalID>>,
     file_path_changed: bool,
     internal_ocr_tree: RefCell<Tree<OCRElement>>,
 }
@@ -134,7 +133,6 @@ fn get_image(root: scraper::ElementRef) -> String {
     // TODO: error handle
     return ret;
 }
-
 fn get_bbox(root: scraper::ElementRef) -> ocr_element::BBox {
     let ocr_props = root.value().attr("title").unwrap();
     for pattern in ocr_props.split_terminator(";") {
@@ -164,7 +162,6 @@ impl HOCREditor {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         load_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        println!("Installed image loaders?");
         Self::default()
     }
     fn get_ocr_pages(&self) -> Vec<ElementRef<'_>> {
@@ -174,44 +171,36 @@ impl HOCREditor {
         }
         Vec::new()
     }
-    fn get_selected_elt(&self) -> Option<ElementRef<'_>> {
-        if !self.selected_id.borrow().is_empty() {
-            let selector = String::from("#") + &self.selected_id.borrow();
-            let id_sel = Selector::parse(selector.as_str()).unwrap();
-            if let Some(html_tree) = &self.html_tree {
-                let mut found_elt = html_tree.select(&id_sel);
-                return found_elt.next();
-            }
-        }
-        return None;
+    /*
+    fn get_selected_elt(&self) -> Option<&OCRElement> {
+        self.internal_ocr_tree.borrow().get_node(self.selected_id.borrow().deref())
     }
+    */
 
     // TODO: rename
     fn render_tree(&self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for ocr_page in self.get_ocr_pages() {
+            for root in self.internal_ocr_tree.borrow().roots() {
                 // call renderTreeForRoot on each ocr_page
                 // note that the HOCR specification says that ocr_page MUST be present
-                self.render_tree_for_root(ocr_page, ui);
+                self.render_tree_for_root(*root, ui);
             }
         });
     }
     // TODO: rename
-    fn render_tree_for_root(&self, root: scraper::ElementRef, ui: &mut egui::Ui) {
-        // check if root matches the ocr_page, etc. selector
-        if OCR_SELECTOR.matches(&root) {
-            let ocr_type: OCRClass = root
-                .value()
-                .attr("class")
-                .expect("No class!")
-                .parse()
-                .unwrap();
-            let label_text = format!("{}: {}", ocr_type.to_string(), get_root_preview_text(root));
-            let label_id = root.value().attr("id").expect("No ID");
-            if !OCR_WORD_SELECTOR.matches(&root) {
-                // if it is not a word, turn root into a
-                // - collapsible header whose header indicates its class and value (selectable value here)
-                let id = ui.make_persistent_id(label_id);
+    fn render_tree_for_root(&self, root: InternalID, ui: &mut egui::Ui) {
+        let ocr_tree = self.internal_ocr_tree.borrow();
+        if let Some(elt) = ocr_tree.get_node(&root) {
+            let label_text = format!("{}{}", elt.ocr_element_type.to_string(), {
+                let s = self.get_root_preview_text(root);
+                if !s.is_empty() {
+                    format! {": {}", s}
+                } else {
+                    s
+                }
+            },);
+            if ocr_tree.has_children(&root) {
+                let id = ui.make_persistent_id(root);
                 egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
                     id,
@@ -221,26 +210,30 @@ impl HOCREditor {
                     // ui.label(label_text)
                     ui.selectable_value(
                         &mut *self.selected_id.borrow_mut(),
-                        label_id.to_string(),
+                        Some(root),
                         label_text,
                     );
                 })
                 // - body created by recursively calling renderTree on the children
                 .body(|ui| {
-                    for child in root.children() {
-                        if let Some(child_elt) = scraper::ElementRef::wrap(child) {
-                            self.render_tree_for_root(child_elt, ui);
-                        }
+                    for child in ocr_tree.children(&root) {
+                        self.render_tree_for_root(*child, ui);
                     }
                 });
             } else {
+                let childless_label_text = format!("{}{}", elt.ocr_element_type.to_string(), {
+                    if !elt.ocr_text.is_empty() {
+                        format! {": {}", elt.ocr_text}
+                    } else {
+                        String::new()
+                    }
+                },);
+
                 ui.selectable_value(
                     &mut *self.selected_id.borrow_mut(),
-                    label_id.to_string(),
-                    get_root_text(root),
+                    Some(root),
+                    childless_label_text,
                 );
-                // if it is a word, turn root into a selectable value
-                // label: type (word, carea, par, etc.) preview text
             }
         }
     }
@@ -255,7 +248,20 @@ impl HOCREditor {
             self.file_path_changed = false;
             if let Some(tree) = &self.html_tree {
                 self.internal_ocr_tree = RefCell::new(OCRElement::html_to_ocr_tree(tree.clone()));
-                println!("{:?}", self.internal_ocr_tree);
+                // println!("{:?}", self.internal_ocr_tree);
+            }
+        }
+    }
+
+    fn draw_bbox(&self, offset: egui::Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
+        if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
+            if let OCRProperty::BBox(bbox) = node.ocr_properties.get("bbox").unwrap() {
+                selectable_rect(
+                    ui,
+                    bbox.to_rect().translate(offset),
+                    &mut *self.selected_id.borrow_mut(),
+                    Some(*elt_id),
+                );
             }
         }
     }
@@ -267,27 +273,48 @@ impl HOCREditor {
                 // ui.image(image_path);
                 let response = ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
                 // if we have a selected ID, draw bboxes for it and its siblings
-                if let Some(elt) = self.get_selected_elt() {
+                if self.selected_id.borrow().is_none() {
+                    return;
+                } else {
+                    let elt = self.selected_id.borrow().unwrap();
                     let offset = response.rect.min.to_vec2();
-                    selectable_rect(
-                        ui,
-                        get_bbox(elt).to_rect().translate(offset),
-                        &mut *self.selected_id.borrow_mut(),
-                        elt.value().attr("id").unwrap().to_string(),
-                    );
-                    for sib_elt in elt.prev_siblings().chain(elt.next_siblings()) {
-                        if let Some(sibling_elt) = scraper::ElementRef::wrap(sib_elt) {
-                            selectable_rect(
-                                ui,
-                                get_bbox(sibling_elt).to_rect().translate(offset),
-                                &mut *self.selected_id.borrow_mut(),
-                                sibling_elt.value().attr("id").unwrap().to_string(),
-                            );
-                        }
+                    self.draw_bbox(offset, &elt, ui);
+                    for sib_elt in self
+                        .internal_ocr_tree
+                        .borrow()
+                        .prev_siblings(&elt)
+                        .chain(self.internal_ocr_tree.borrow().next_siblings(&elt))
+                    {
+                        self.draw_bbox(offset, sib_elt, ui);
                     }
                 }
             });
         }
+    }
+
+    fn build_text(&self, id: InternalID, count: &mut u32, s: &mut String) {
+        if let Some(node) = self.internal_ocr_tree.borrow().get_node(&id) {
+            if !node.ocr_text.trim().is_empty() {
+                s.push_str(node.ocr_text.as_str());
+                *count += 1;
+            }
+            if *count >= 2 {
+                return;
+            }
+            for child_id in self.internal_ocr_tree.borrow().children(&id) {
+                self.build_text(*child_id, count, s);
+                if *count >= 2 {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn get_root_preview_text(&self, root: InternalID) -> String {
+        let mut s = String::new();
+        let mut count = 0;
+        self.build_text(root, &mut count, &mut s);
+        s
     }
 }
 

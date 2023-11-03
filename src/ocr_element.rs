@@ -1,6 +1,7 @@
 use crate::tree::Tree;
 use eframe::egui;
 use itertools::Itertools;
+
 use lazy_static::lazy_static;
 use scraper::{ElementRef, Selector};
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
@@ -73,7 +74,7 @@ impl FromStr for BBox {
 }
 
 #[derive(Debug)]
-enum OCRProperty {
+pub enum OCRProperty {
     BBox(BBox),
     Image(PathBuf),
     Float(f32),
@@ -88,37 +89,12 @@ enum OCRProperty {
 // TODO: subclasses because page, word, line have different properties
 #[derive(Default, Debug)]
 pub struct OCRElement {
-    html_element_type: String,
-    ocr_element_type: OCRClass,
+    pub html_element_type: String,
+    pub ocr_element_type: OCRClass,
     // id: String, // these will be auto-generated during HTML writing
-    ocr_properties: HashMap<String, OCRProperty>,
-    ocr_text: String,
-    ocr_lang: Option<String>, // only ocr_par has lang I think
-}
-
-pub fn get_root_preview_text(root: scraper::ElementRef) -> String {
-    let mut count = 0;
-    let mut s = String::new();
-    for text in root.text() {
-        // if text is entirely whitespace, skip
-        if !text.trim().is_empty() {
-            if count == 0 {
-                s.push_str(text.trim_start());
-            } else {
-                s.push_str(text);
-            }
-            count += 1;
-        }
-        if count >= 2 {
-            break;
-        }
-    }
-    s.push_str("...");
-    s
-}
-
-pub fn get_root_text(root: scraper::ElementRef) -> String {
-    root.text().filter(|s| !s.trim().is_empty()).join("")
+    pub ocr_properties: HashMap<String, OCRProperty>,
+    pub ocr_text: String,
+    pub ocr_lang: Option<String>, // only ocr_par has lang I think
 }
 
 impl OCRElement {
@@ -133,6 +109,10 @@ impl OCRElement {
                 }
             }
         }
+    }
+
+    fn get_root_text(root: scraper::ElementRef) -> String {
+        root.text().filter(|s| !s.trim().is_empty()).join("")
     }
 
     fn html_elt_to_ocr_elt(elt: ElementRef) -> OCRElement {
@@ -154,7 +134,7 @@ impl OCRElement {
                 HashMap::new()
             },
             ocr_text: if OCR_WORD_SELECTOR.matches(&elt) {
-                get_root_text(elt)
+                Self::get_root_text(elt)
             } else {
                 String::new()
             },
@@ -231,7 +211,7 @@ impl OCRProperty {
     pub fn parse_properties(title_content: &str) -> HashMap<String, OCRProperty> {
         let mut property_dict = HashMap::new();
         for pattern in title_content.split_terminator("; ") {
-            println!("{}", pattern);
+            // println!("{}", pattern);
             if let Some((prefix, suffix)) = pattern.split_once(" ") {
                 let trimmed = prefix.trim();
                 let ocr_prop = match trimmed {
