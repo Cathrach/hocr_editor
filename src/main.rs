@@ -10,6 +10,7 @@ use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+// global "constants" for egui stuff
 lazy_static! {
     static ref OCR_SELECTOR: Selector =
         Selector::parse(".ocr_page, .ocr_carea, .ocr_line, .ocr_par, .ocrx_word, .ocr_caption, .ocr_separator, .ocr_photo").unwrap();
@@ -29,6 +30,9 @@ fn main() {
     );
 }
 
+type InternalID = u32;
+
+// main struct: the state of our app
 #[derive(Default, Debug)]
 struct HOCREditor {
     file_path: Option<PathBuf>,
@@ -36,6 +40,7 @@ struct HOCREditor {
     image_path: Option<String>,
     selected_id: RefCell<String>,
     file_path_changed: bool,
+    internal_ocr_tree: RefCell<Tree<OCRElement>>,
 }
 
 #[derive(Default, Debug)]
@@ -64,6 +69,36 @@ impl BBox {
         egui::Rect {
             min: self.top_left.to_pos2(),
             max: self.bottom_right.to_pos2(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParseError;
+
+impl FromStr for BBox {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let coords: Vec<&str> = s.trim().split(" ").collect();
+        if coords.len() >= 4 {
+            let x_fromstr = coords[0].parse::<u32>().map_err(|_| ParseError)?;
+            let y_fromstr = coords[1].parse::<u32>().map_err(|_| ParseError)?;
+            let z_fromstr = coords[2].parse::<u32>().map_err(|_| ParseError)?;
+            let w_fromstr = coords[3].parse::<u32>().map_err(|_| ParseError)?;
+
+            return Ok(BBox {
+                top_left: IntPos2 {
+                    x: x_fromstr,
+                    y: y_fromstr,
+                },
+                bottom_right: IntPos2 {
+                    x: z_fromstr,
+                    y: w_fromstr,
+                },
+            });
+        } else {
+            return Err(ParseError);
         }
     }
 }
@@ -124,31 +159,33 @@ fn selectable_rect<Value: PartialEq>(
     response
 }
 
+#[derive(Debug)]
 enum OCRProperty {
     BBox(BBox),
     Image(PathBuf),
     Float(f32),
     UInt(u32),
     Int(i32),
-    Baseline(f32, i32),
+    Baseline(f32, f32),
     ScanRes(u32, u32),
 }
 
 // internal representation of a node in the HTML tree containing OCR data
 // TODO: transform the html tree into a tree of these
 // TODO: subclasses because page, word, line have different properties
-struct OCRElement<'a> {
+#[derive(Default, Debug)]
+struct OCRElement {
     html_element_type: String,
     ocr_element_type: OCRClass,
-    id: String,
+    // id: String, // these will be auto-generated during HTML writing
     ocr_properties: HashMap<String, OCRProperty>,
     ocr_text: String,
     ocr_lang: Option<String>, // only ocr_par has lang I think
-    parent: Option<&'a OCRElement<'a>>,
-    children: Vec<OCRElement<'a>>,
 }
 
+#[derive(Default, Debug)]
 enum OCRClass {
+    #[default]
     Page,
     CArea,
     Par,
@@ -190,6 +227,273 @@ impl ToString for OCRClass {
             Self::Caption => "Caption".to_string(),
         }
     }
+}
+
+// the "tree" is a dictionary of IDs to nodes
+#[derive(Default, Debug)]
+struct Tree<D> {
+    nodes: HashMap<InternalID, Node<D>>,
+    roots: Vec<InternalID>,
+    curr_id: InternalID,
+}
+
+#[derive(Debug)]
+// a node has a value, a parent (an ID), and children (a vector of IDs)
+// yes, removing and inserting are O(n), but whatever, I need order to be preserved
+struct Node<D> {
+    value: D,
+    parent: Option<InternalID>,
+    children: Vec<InternalID>,
+    id: InternalID,
+}
+
+enum Position {
+    Before,
+    After,
+}
+
+impl<D> Tree<D> {
+    // return an empty tree
+    fn new() -> Self {
+        Tree {
+            nodes: HashMap::new(),
+            roots: Vec::new(),
+            curr_id: 0,
+        }
+    }
+
+    // add a node as a root
+    fn add_root(&mut self, root: D) -> InternalID {
+        let id = self.curr_id;
+        self.nodes.insert(
+            id,
+            Node {
+                value: root,
+                parent: None,
+                children: Vec::new(),
+                id: id,
+            },
+        );
+        self.roots.push(id);
+        self.curr_id += 1;
+        id
+    }
+
+    // add a child to the end of id's children
+    fn push_child(&mut self, id: &InternalID, child: D) -> Option<InternalID> {
+        if let Some(parent) = self.nodes.get_mut(id) {
+            let new_id = self.curr_id;
+            parent.children.push(new_id);
+            self.nodes.insert(
+                new_id,
+                Node {
+                    value: child,
+                    parent: Some(*id),
+                    children: Vec::new(),
+                    id: new_id,
+                },
+            );
+            self.curr_id += 1;
+            return Some(new_id);
+        }
+        None
+    }
+
+    // add a sibling to a node
+    fn add_sibling(&mut self, id: &InternalID, sibling: D, pos: Position) -> Option<InternalID> {
+        // if id exists, find node's parent
+        // if node's parent doesn't exist, add a root
+        // if node's parent exists
+        // insert sibling into the hash map
+        // insert sibling's ID into the parent's child vector before id
+        if let Some(node) = self.nodes.get(id) {
+            if let Some(par_id) = node.parent {
+                let new_id = self.curr_id;
+                self.nodes.insert(
+                    new_id,
+                    Node {
+                        value: sibling,
+                        parent: Some(par_id),
+                        children: Vec::new(),
+                        id: new_id,
+                    },
+                );
+                self.curr_id += 1;
+                let par_child_index = self
+                    .nodes
+                    .get(&par_id)
+                    .unwrap()
+                    .children
+                    .binary_search(id)
+                    .unwrap();
+                let insert_index = par_child_index
+                    + match pos {
+                        Position::After => 1,
+                        Position::Before => 0,
+                    };
+                self.nodes
+                    .get_mut(&par_id)
+                    .unwrap()
+                    .children
+                    .insert(insert_index, *id);
+                return Some(new_id);
+            } else {
+                return Some(self.add_root(sibling));
+            }
+        } else {
+            None
+        }
+    }
+
+    // get a (ref to) node value by ID -- wrapper around hash map function
+    fn get_node(&self, id: &InternalID) -> Option<&D> {
+        match self.nodes.get(id) {
+            Some(node) => Some(&node.value),
+            None => None,
+        }
+    }
+
+    // mutable ref to node val by ID -- used when we need to modify bbox or text
+    fn get_mut_node(&mut self, id: &InternalID) -> Option<&mut D> {
+        match self.nodes.get_mut(id) {
+            Some(node) => Some(&mut node.value),
+            None => None,
+        }
+    }
+
+    // this is only a helper! never call it outside!
+    fn delete_child_from_parent(&mut self, par_id: &InternalID, child_id: &InternalID) {
+        let par = self.nodes.get_mut(par_id).unwrap();
+        let index = par.children.binary_search(child_id).unwrap();
+        par.children.remove(index);
+    }
+
+    // helper for delete_node
+    // this doesn't disconnect a node from its parent, it just recursively removes a node and its children
+    // any node passed in here will just get removed from the hashmap
+    // it returns whether the node actually existed and the parent ID for use in delete_node
+    fn delete_rec_node(&mut self, id: &InternalID) -> (bool, Option<InternalID>) {
+        let removed = self.nodes.remove(id);
+        if let Some(node) = removed {
+            for child in node.children {
+                self.delete_rec_node(&child);
+            }
+            return (true, node.parent);
+        }
+        return (false, None);
+    }
+
+    // delete a node from the tree. This ALSO DELETES ITS CHILDREN!
+    fn delete_node(&mut self, id: &InternalID) {
+        // remove the node and its children from hashmap
+        let (existed, parent_id) = self.delete_rec_node(id);
+        if existed {
+            match parent_id {
+                // node is a root
+                None => {
+                    let index = self.roots.binary_search(id).unwrap();
+                    self.roots.remove(index);
+                }
+                Some(par_id) => self.delete_child_from_parent(&par_id, id),
+            }
+        }
+    }
+}
+
+fn parse_properties(title_content: &str) -> HashMap<String, OCRProperty> {
+    let mut property_dict = HashMap::new();
+    for pattern in title_content.split_terminator("; ") {
+        println!("{}", pattern);
+        if let Some((prefix, suffix)) = pattern.split_once(" ") {
+            let trimmed = prefix.trim();
+            let ocr_prop = match trimmed {
+                "image" => Some(OCRProperty::Image(PathBuf::from(suffix.trim_matches('"')))),
+                "bbox" => Some(OCRProperty::BBox(BBox::from_str(suffix).unwrap())),
+                "baseline" => {
+                    let parts: Vec<&str> = suffix.splitn(2, " ").collect();
+                    Some(OCRProperty::Baseline(
+                        parts[0].parse::<f32>().unwrap(),
+                        parts[1].parse::<f32>().unwrap(),
+                    ))
+                },
+                "ppageno" => Some(OCRProperty::UInt(suffix.parse::<u32>().unwrap())),
+                "scan_res" => {
+                    let parts: Vec<&str> = suffix.splitn(2, " ").collect();
+                    Some(OCRProperty::ScanRes(
+                        parts[0].parse::<u32>().unwrap(),
+                        parts[1].parse::<u32>().unwrap(),
+                    ))
+                },
+                "x_size" | "x_descenders" | "x_ascenders" => {
+                    Some(OCRProperty::Float(suffix.parse::<f32>().unwrap()))
+                },
+                "x_wconf" => Some(OCRProperty::UInt(suffix.parse::<u32>().unwrap())),
+                _ => None,
+            };
+            if !ocr_prop.is_none() {
+                property_dict.insert(trimmed.to_string(), ocr_prop.unwrap());
+            }
+        }
+    }
+    property_dict
+}
+
+fn html_elt_to_ocr_elt(elt: ElementRef) -> OCRElement {
+    let mut ocr_class = "";
+    // assumes this element matcehs the OCR selector
+    for class in elt.value().classes() {
+        if class.starts_with("ocr") {
+            ocr_class = class;
+        }
+    }
+    // TODO: exit gracefully if parsing fails
+
+    OCRElement {
+        html_element_type: elt.value().name().to_string(),
+        ocr_element_type: ocr_class.parse().unwrap(),
+        ocr_properties: if let Some(text) = elt.value().attr("title") {
+            parse_properties(text)
+        } else {
+            HashMap::new()
+        },
+        ocr_text: if OCR_WORD_SELECTOR.matches(&elt) {
+            get_root_text(elt)
+        } else {
+            String::new()
+        },
+        ocr_lang: if let Some(lang) = elt.value().attr("lang") {
+            Some(lang.to_string())
+        } else {
+            None
+        },
+    }
+}
+
+fn add_children_to_ocr_tree(elt_ref: ElementRef, par_id: u32, tree: &mut Tree<OCRElement>) {
+    for child in elt_ref.children() {
+        if let Some(child_ref) = ElementRef::wrap(child) {
+            if OCR_SELECTOR.matches(&child_ref) {
+                let added_id = tree.push_child(&par_id, html_elt_to_ocr_elt(child_ref));
+                if let Some(add_id) = added_id {
+                    add_children_to_ocr_tree(child_ref, add_id, tree);
+                }
+            }
+        }
+    }
+}
+
+fn html_to_ocr_tree(html_tree: scraper::Html) -> Tree<OCRElement> {
+    // recursively walk the html_tree starting from the root html node
+    // look through all children
+    // if child matches an OCR selector, it is a root
+    // then walk through chlidren matching an OCR selector of roots, etc.
+    let mut tree: Tree<OCRElement> = Tree::new();
+    // TODO: don't just grab ocr_pages
+    for page_elt in html_tree.select(&OCR_PAGE_SELECTOR) {
+        let root_id = tree.add_root(html_elt_to_ocr_elt(page_elt));
+        add_children_to_ocr_tree(page_elt, root_id, &mut tree);
+    }
+    tree
 }
 
 fn load_fonts(ctx: &egui::Context) {
@@ -385,6 +689,10 @@ impl eframe::App for HOCREditor {
                         self.image_path = Some(get_image(self.get_ocr_pages()[0]));
                     }
                     self.file_path_changed = false;
+                    if let Some(tree) = &self.html_tree {
+                        self.internal_ocr_tree = RefCell::new(html_to_ocr_tree(tree.clone()));
+                        println!("{:?}", self.internal_ocr_tree);
+                    }
                 }
             }
 
