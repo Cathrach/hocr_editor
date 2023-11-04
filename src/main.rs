@@ -1,7 +1,7 @@
 use crate::ocr_element::{OCRElement, OCRProperty};
 use crate::tree::Tree;
 use eframe::egui;
-use egui::{FontData, FontDefinitions, FontFamily};
+use egui::{FontData, FontDefinitions, FontFamily, Pos2, Rect, Sense, Vec2};
 use html5ever::interface::tree_builder::TreeSink;
 use html5ever::interface::AppendNode;
 use html5ever::interface::ElementFlags;
@@ -37,6 +37,14 @@ fn main() {
 
 type InternalID = u32;
 
+// TODO: do I need this?
+#[derive(Default, Debug, PartialEq)]
+enum Mode {
+    #[default]
+    Select,
+    Edit
+}
+
 // main struct: the state of our app
 #[derive(Debug)]
 struct HOCREditor {
@@ -46,6 +54,7 @@ struct HOCREditor {
     selected_id: RefCell<Option<InternalID>>,
     file_path_changed: bool,
     internal_ocr_tree: RefCell<Tree<OCRElement>>,
+    mode: Mode,
 }
 
 impl Default for HOCREditor {
@@ -57,6 +66,7 @@ impl Default for HOCREditor {
             selected_id: Default::default(),
             file_path_changed: false,
             internal_ocr_tree: Default::default(),
+            mode: Default::default(),
         }
     }
 }
@@ -271,12 +281,14 @@ impl HOCREditor {
         }
     }
 
+    // TODO: return the rect we drew if successful
     fn draw_bbox(&self, offset: egui::Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
         if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
             if let OCRProperty::BBox(bbox) = node.ocr_properties.get("bbox").unwrap() {
-                selectable_rect(
+                let egui_rect = bbox.to_rect().translate(offset);
+                let response = selectable_rect(
                     ui,
-                    bbox.to_rect().translate(offset),
+                    egui_rect,
                     &mut *self.selected_id.borrow_mut(),
                     Some(*elt_id),
                 );
@@ -297,14 +309,55 @@ impl HOCREditor {
                     let elt = self.selected_id.borrow().unwrap();
                     let offset = response.rect.min.to_vec2();
                     self.draw_bbox(offset, &elt, ui);
-                    for sib_elt in self
-                        .internal_ocr_tree
-                        .borrow()
-                        .prev_siblings(&elt)
-                        .chain(self.internal_ocr_tree.borrow().next_siblings(&elt))
-                    {
-                        self.draw_bbox(offset, sib_elt, ui);
+                    if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
+                        if let OCRProperty::BBox(bbox) = node.ocr_properties.get_mut("bbox").unwrap() {
+                            let egui_rect = bbox.to_rect().translate(offset);
+                            // sense drags around the border of the rect
+                            // sense drags in any direction around the corners
+                            //                 let point_rect = Rect::from_center_size(point_in_screen, size);
+                            //                 let point_id = response.id.with(i);
+                            //                 let point_response = ui.interact(point_rect, point_id, Sense::drag());
+                            //
+                            //                 *point += point_response.drag_delta();
+                            //                 *point = to_screen.from().clamp(*point);
+                            let top_left = Pos2 { x: egui_rect.left(), y: egui_rect.top() };
+                            let top_right = Pos2 { x: egui_rect.right(), y: egui_rect.top() };
+                            let bottom_left = Pos2 { x: egui_rect.left(), y: egui_rect.bottom() };
+                            let bottom_right = Pos2 { x: egui_rect.right(), y: egui_rect.bottom() };
+                            // TODO: is this a good size?
+                            let size = Vec2::splat(16.0);
+                            let top_left_rect = Rect::from_center_size(top_left, size);
+                            let top_right_rect = Rect::from_center_size(top_right, size);
+                            let bottom_left_rect = Rect::from_center_size(bottom_left, size);
+                            let bottom_right_rect = Rect::from_center_size(bottom_right, size);
+                            let top_left_id = response.id.with(0);
+                            let top_right_id = response.id.with(1);
+                            let bottom_left_id = response.id.with(2);
+                            let bottom_right_id = response.id.with(3);
+                            let top_left_response = ui.interact(top_left_rect, top_left_id, Sense::drag());
+                            let top_right_response = ui.interact(top_right_rect, top_right_id, Sense::drag());
+                            let bottom_left_response = ui.interact(bottom_left_rect, bottom_left_id, Sense::drag());
+                            let bottom_right_response = ui.interact(bottom_right_rect, bottom_right_id, Sense::drag());
+                            // top left drag: change just top left of bbox
+                            bbox.top_left.x = ((bbox.top_left.x as f32) + top_left_response.drag_delta().x + bottom_left_response.drag_delta().x).max(0.0) as u32;
+                            bbox.top_left.y = ((bbox.top_left.y as f32) + top_left_response.drag_delta().y + top_right_response.drag_delta().y).max(0.0) as u32;
+                            bbox.bottom_right.x = ((bbox.bottom_right.x as f32) + top_right_response.drag_delta().x + bottom_right_response.drag_delta().x).max(0.0) as u32;
+                            bbox.bottom_right.y = ((bbox.bottom_right.y as f32) + bottom_left_response.drag_delta().y + bottom_right_response.drag_delta().y).max(0.0) as u32;
+                        }
                     }
+                    // sense drags in only vertical or horiz at the sides
+                    // only draw siblings if we are selecting
+                    if self.mode == Mode::Select {
+                        for sib_elt in self
+                            .internal_ocr_tree
+                            .borrow()
+                            .prev_siblings(&elt)
+                            .chain(self.internal_ocr_tree.borrow().next_siblings(&elt))
+                        {
+                            self.draw_bbox(offset, sib_elt, ui);
+                        }
+                    }
+                    // if we are editing, allow the bbox to be draggable
                 }
             });
         }
@@ -392,6 +445,14 @@ impl eframe::App for HOCREditor {
             if self.file_path_changed {
                 self.reparse_file();
             }
+            // for now: you can edit the selected bbox by pressing "e"
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::E)) {
+                self.mode = Mode::Edit;
+            }
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.mode = Mode::Select;
+            }
+            // and if you've selected a word, you can edit the text by...
             self.draw_img_and_bboxes(ui);
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
                 self.delete_selected();
