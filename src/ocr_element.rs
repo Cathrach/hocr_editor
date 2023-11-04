@@ -2,9 +2,8 @@ use crate::tree::Tree;
 use crate::InternalID;
 use eframe::egui;
 use html5ever::interface::tree_builder::TreeSink;
-use html5ever::interface::ElementFlags;
 use html5ever::interface::{AppendNode, AppendText};
-use html5ever::{local_name, namespace_prefix, namespace_url, ns};
+use html5ever::{local_name, namespace_url, ns};
 use html5ever::{Attribute, LocalName, QualName};
 use itertools::Itertools;
 
@@ -57,13 +56,13 @@ impl FromStr for BBox {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let coords: Vec<&str> = s.trim().split(" ").collect();
-        if coords.len() >= 4 {
+        return if coords.len() >= 4 {
             let x_fromstr = coords[0].parse::<u32>().map_err(|_| ParseError)?;
             let y_fromstr = coords[1].parse::<u32>().map_err(|_| ParseError)?;
             let z_fromstr = coords[2].parse::<u32>().map_err(|_| ParseError)?;
             let w_fromstr = coords[3].parse::<u32>().map_err(|_| ParseError)?;
 
-            return Ok(BBox {
+            Ok(BBox {
                 top_left: IntPos2 {
                     x: x_fromstr,
                     y: y_fromstr,
@@ -72,10 +71,10 @@ impl FromStr for BBox {
                     x: z_fromstr,
                     y: w_fromstr,
                 },
-            });
+            })
         } else {
-            return Err(ParseError);
-        }
+            Err(ParseError)
+        };
     }
 }
 
@@ -134,7 +133,7 @@ impl OCRElement {
         }
     }
 
-    fn get_root_text(root: scraper::ElementRef) -> String {
+    fn get_root_text(root: ElementRef) -> String {
         root.text().filter(|s| !s.trim().is_empty()).join("")
     }
 
@@ -181,25 +180,6 @@ impl OCRElement {
             Self::add_children_to_ocr_tree(page_elt, root_id, &mut tree);
         }
         tree
-    }
-
-    fn to_html_elt_with_id(&self, html_id: String) -> String {
-        let mut props = Vec::new();
-        for (name, prop) in self.ocr_properties.iter() {
-            props.push(format!("{} {}", name, prop.to_str()));
-        }
-        format!(
-            r#"<{} class='{}' id='{}' title="{}">{}"#,
-            self.html_element_type,
-            self.ocr_element_type.to_string(),
-            html_id,
-            props.as_slice().join("; "),
-            self.ocr_text,
-        )
-    }
-
-    fn close_me(&self) -> String {
-        format!("</{}>", self.html_element_type)
     }
 }
 

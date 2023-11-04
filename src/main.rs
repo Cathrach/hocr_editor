@@ -1,23 +1,19 @@
+use crate::ocr_element::{OCRElement, OCRProperty};
+use crate::tree::Tree;
 use eframe::egui;
 use egui::{FontData, FontDefinitions, FontFamily};
 use html5ever::interface::tree_builder::TreeSink;
 use html5ever::interface::AppendNode;
 use html5ever::interface::ElementFlags;
-use html5ever::{local_name, namespace_prefix, namespace_url, ns};
+use html5ever::{namespace_url, ns};
 use lazy_static::lazy_static;
 use rfd::FileDialog;
+use scraper::Node::*;
 use scraper::Selector;
 use scraper::{ElementRef, Html};
 use std::cell::RefCell;
-use scraper::Node::*;
-use html5ever::{Attribute, LocalName, QualName};
-
 use std::fs::read_to_string;
 use std::path::PathBuf;
-
-use crate::ocr_element::OCR_PAGE_SELECTOR;
-use crate::ocr_element::{OCRElement, OCRProperty};
-use crate::tree::Tree;
 mod ocr_element;
 mod tree;
 
@@ -45,7 +41,6 @@ type InternalID = u32;
 #[derive(Debug)]
 struct HOCREditor {
     file_path: Option<PathBuf>,
-    html_tree: Option<Html>,
     html_write_head: Html,
     image_path: Option<String>,
     selected_id: RefCell<Option<InternalID>>,
@@ -57,7 +52,6 @@ impl Default for HOCREditor {
     fn default() -> Self {
         HOCREditor {
             file_path: Default::default(),
-            html_tree: Default::default(),
             html_write_head: Html::new_document(),
             image_path: Default::default(),
             selected_id: Default::default(),
@@ -75,10 +69,7 @@ struct SelectableRect {
 
 impl SelectableRect {
     fn new(adj_bbox: egui::Rect, selected: bool) -> Self {
-        Self {
-            adj_bbox: adj_bbox,
-            selected: selected,
-        }
+        Self { adj_bbox, selected }
     }
 }
 
@@ -245,7 +236,7 @@ impl HOCREditor {
             let html_id = self.html_write_head.create_element(
                 root.name.clone(),
                 root.attrs().map(|tup| create_attr(tup)).collect(),
-                Default::default()
+                Default::default(),
             );
             for child in html_tree.tree.get(doc).unwrap().children() {
                 match child.value() {
@@ -256,16 +247,17 @@ impl HOCREditor {
                             doc_node.public_id.clone(),
                             doc_node.system_id.clone(),
                         );
-                    },
+                    }
                     ProcessingInstruction(pi) => {
                         println!("Found PI {:?}", pi);
                         self.html_write_head
                             .create_pi(pi.target.clone(), pi.data.clone());
-                    },
+                    }
                     Comment(comment) => {
                         println!("Found comment {:?}", comment);
-                        self.html_write_head.create_comment(comment.comment.clone());
-                    },
+                        let c_id = self.html_write_head.create_comment(comment.comment.clone());
+                        self.html_write_head.append(&doc, AppendNode(c_id));
+                    }
                     _ => println!("Debug extra node: {:?}", child.value()),
                 };
             }
@@ -342,10 +334,52 @@ impl HOCREditor {
         self.build_text(root, &mut count, &mut s);
         s
     }
+
+    fn open_file(&mut self) {
+        self.file_path = FileDialog::new()
+            .add_filter("hocr", &["html", "xml", "hocr"])
+            .pick_file();
+        self.file_path_changed = true;
+    }
+
+    fn save_file(&self) {
+        if let Some(path) = &self.file_path {
+            let new_path = path.with_file_name("test.html");
+            let _ = std::fs::write(
+                new_path,
+                ocr_element::add_as_body(&self.internal_ocr_tree.borrow(), &self.html_write_head)
+                    .html(),
+            );
+        }
+    }
+
+    fn delete_selected(&mut self) {
+        let mut next_sib = None;
+        if !self.selected_id.borrow().is_none() {
+            let elt = self.selected_id.borrow().unwrap();
+            next_sib = self.internal_ocr_tree.borrow().next_sibling(&elt);
+            self.internal_ocr_tree.borrow_mut().delete_node(&elt);
+        }
+        *self.selected_id.borrow_mut() = next_sib;
+    }
 }
 
 impl eframe::App for HOCREditor {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open").clicked() {
+                        self.open_file();
+                        ui.close_menu();
+                    }
+                    if ui.button("Save").clicked() {
+                        self.save_file();
+                        ui.close_menu();
+                    }
+                })
+            })
+        });
         egui::SidePanel::right("HOCR Tree").show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("HOCR Tree");
@@ -354,39 +388,13 @@ impl eframe::App for HOCREditor {
             self.render_tree(ui);
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            if ui.button("Open HOCR File").clicked() {
-                self.file_path = FileDialog::new()
-                    .add_filter("hocr", &["html", "xml", "hocr"])
-                    .pick_file();
-                self.file_path_changed = true;
-            }
-            if ui.button("Save HOCR File").clicked() {
-                if let Some(path) = &self.file_path {
-                    let new_path = path.with_file_name("test.html");
-                    let _ = std::fs::write(
-                        new_path,
-                        ocr_element::add_as_body(
-                            &self.internal_ocr_tree.borrow(),
-                            &self.html_write_head,
-                        )
-                        .html(),
-                    );
-                }
-            }
-
             // let's not re-parse the file every frame
             if self.file_path_changed {
                 self.reparse_file();
             }
             self.draw_img_and_bboxes(ui);
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
-                let mut next_sib = None;
-                if !self.selected_id.borrow().is_none() {
-                    let elt = self.selected_id.borrow().unwrap();
-                    next_sib = self.internal_ocr_tree.borrow().next_sibling(&elt);
-                    self.internal_ocr_tree.borrow_mut().delete_node(&elt);
-                }
-                *self.selected_id.borrow_mut() = next_sib;
+                self.delete_selected();
             }
         });
     }
@@ -400,7 +408,7 @@ fn create_attr(tup: (&str, &str)) -> html5ever::Attribute {
     }
 }
 
-fn append_elt_tree(html: &mut scraper::Html, parent: &ego_tree::NodeId, elt: ElementRef) {
+fn append_elt_tree(html: &mut Html, parent: &ego_tree::NodeId, elt: ElementRef) {
     // recursively calls append on a copied element
     // create attribute
 
