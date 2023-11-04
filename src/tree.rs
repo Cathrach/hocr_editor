@@ -1,6 +1,5 @@
 use crate::InternalID;
 use std::collections::HashMap;
-use std::iter;
 use std::slice::Iter;
 
 // the "tree" is a dictionary of IDs to nodes
@@ -15,10 +14,10 @@ pub struct Tree<D> {
 // a node has a value, a parent (an ID), and children (a vector of IDs)
 // yes, removing and inserting are O(n), but whatever, I need order to be preserved
 pub struct Node<D> {
-    value: D,
-    parent: Option<InternalID>,
-    children: Vec<InternalID>,
-    id: InternalID,
+    pub value: D,
+    pub parent: Option<InternalID>,
+    pub children: Vec<InternalID>,
+    pub id: InternalID,
 }
 
 pub enum Position {
@@ -150,6 +149,10 @@ impl<D> Tree<D> {
         } else {
             return Default::default();
         }
+    }
+
+    pub fn next_sibling(&self, id: &InternalID) -> Option<InternalID> {
+        self.next_siblings(id).next().copied()
     }
 
     pub fn next_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {

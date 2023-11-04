@@ -1,5 +1,11 @@
 use crate::tree::Tree;
+use crate::InternalID;
 use eframe::egui;
+use html5ever::interface::tree_builder::TreeSink;
+use html5ever::interface::ElementFlags;
+use html5ever::interface::{AppendNode, AppendText};
+use html5ever::{local_name, namespace_prefix, namespace_url, ns};
+use html5ever::{Attribute, LocalName, QualName};
 use itertools::Itertools;
 
 use lazy_static::lazy_static;
@@ -84,6 +90,23 @@ pub enum OCRProperty {
     ScanRes(u32, u32),
 }
 
+impl OCRProperty {
+    fn to_str(&self) -> String {
+        match self {
+            OCRProperty::BBox(bbox) => format!(
+                "{} {} {} {}",
+                bbox.top_left.x, bbox.top_left.y, bbox.bottom_right.x, bbox.bottom_right.y
+            ),
+            OCRProperty::Image(path) => format!(r#""{}""#, path.display()),
+            OCRProperty::Float(f) => f.to_string(),
+            OCRProperty::UInt(u) => u.to_string(),
+            OCRProperty::Int(u) => u.to_string(),
+            OCRProperty::Baseline(f1, f2) => format!("{} {}", f1, f2),
+            OCRProperty::ScanRes(f1, f2) => format!("{} {}", f1, f2),
+        }
+    }
+}
+
 // internal representation of a node in the HTML tree containing OCR data
 // TODO: transform the html tree into a tree of these
 // TODO: subclasses because page, word, line have different properties
@@ -159,6 +182,25 @@ impl OCRElement {
         }
         tree
     }
+
+    fn to_html_elt_with_id(&self, html_id: String) -> String {
+        let mut props = Vec::new();
+        for (name, prop) in self.ocr_properties.iter() {
+            props.push(format!("{} {}", name, prop.to_str()));
+        }
+        format!(
+            r#"<{} class='{}' id='{}' title="{}">{}"#,
+            self.html_element_type,
+            self.ocr_element_type.to_string(),
+            html_id,
+            props.as_slice().join("; "),
+            self.ocr_text,
+        )
+    }
+
+    fn close_me(&self) -> String {
+        format!("</{}>", self.html_element_type)
+    }
 }
 
 #[derive(Default, Debug)]
@@ -172,6 +214,30 @@ pub enum OCRClass {
     Separator,
     Photo,
     Caption,
+}
+
+impl OCRClass {
+    pub fn to_user_str(&self) -> String {
+        match self {
+            Self::CArea => "Area".to_string(),
+            Self::Page => "Page".to_string(),
+            Self::Line => "Line".to_string(),
+            Self::Par => "Par".to_string(),
+            Self::Word => "Word".to_string(),
+            Self::Photo => "Photo".to_string(),
+            Self::Separator => "Separator".to_string(),
+            Self::Caption => "Caption".to_string(),
+        }
+    }
+    pub fn to_id_str(&self) -> String {
+        match self {
+            Self::CArea | Self::Separator | Self::Photo => "block".to_string(),
+            Self::Page => "page".to_string(),
+            Self::Line | Self::Caption => "line".to_string(),
+            Self::Par => "par".to_string(),
+            Self::Word => "word".to_string(),
+        }
+    }
 }
 
 impl FromStr for OCRClass {
@@ -195,14 +261,14 @@ impl FromStr for OCRClass {
 impl ToString for OCRClass {
     fn to_string(&self) -> String {
         match self {
-            Self::CArea => "Area".to_string(),
-            Self::Page => "Page".to_string(),
-            Self::Line => "Line".to_string(),
-            Self::Par => "Par".to_string(),
-            Self::Word => "Word".to_string(),
-            Self::Photo => "Photo".to_string(),
-            Self::Separator => "Separator".to_string(),
-            Self::Caption => "Caption".to_string(),
+            Self::CArea => "ocr_carea".to_string(),
+            Self::Page => "ocr_page".to_string(),
+            Self::Line => "ocr_line".to_string(),
+            Self::Par => "ocr_par".to_string(),
+            Self::Word => "ocrx_word".to_string(),
+            Self::Photo => "ocr_photo".to_string(),
+            Self::Separator => "ocr_separator".to_string(),
+            Self::Caption => "ocr_caption".to_string(),
         }
     }
 }
@@ -244,5 +310,96 @@ impl OCRProperty {
             }
         }
         property_dict
+    }
+}
+
+pub fn add_as_body(tree: &Tree<OCRElement>, html_head: &scraper::Html) -> scraper::Html {
+    let mut html_final = html_head.clone();
+    // debug
+    // TODO: this guy doesn't have the doctype or XML comment
+    println!("head of cloned: {}", html_final.html());
+    let mut ids = HashMap::<String, u32>::new();
+    ids.insert("page".to_string(), 1);
+    ids.insert("block".to_string(), 1);
+    ids.insert("par".to_string(), 1);
+    ids.insert("line".to_string(), 1);
+    ids.insert("word".to_string(), 1);
+    // add body element to html
+    let html_id = html_final.root_element().id();
+    let body_id = html_final.create_element(
+        QualName::new(None, ns!(html), local_name!("body")),
+        Vec::new(),
+        Default::default(),
+    );
+    html_final.append(&html_id, AppendNode(body_id));
+    // now add the roots
+    for root in tree.roots() {
+        add_ocr_tree(&tree, root, &mut ids, &mut html_final, &body_id);
+    }
+    html_final
+}
+
+// add node as a child of parent in html
+fn add_ocr_tree(
+    tree: &Tree<OCRElement>,
+    node: &InternalID,
+    ids: &mut HashMap<String, u32>,
+    html: &mut scraper::Html,
+    parent_id: &ego_tree::NodeId,
+) {
+    if let Some(n) = tree.get_node(node) {
+        let type_id = n.ocr_element_type.to_id_str();
+        let curr_no = *ids.get(&type_id).unwrap();
+        ids.insert(type_id.clone(), curr_no + 1);
+        let html_id = if type_id == "page" {
+            format! {"page_{}", curr_no}
+        } else {
+            format!("{}_{}_{}", type_id, *ids.get("page").unwrap() - 1, curr_no)
+        };
+        let mut props = Vec::new();
+        for (name, prop) in n.ocr_properties.iter() {
+            props.push(format!("{} {}", name, prop.to_str()));
+        }
+        let mut attrs: Vec<Attribute> = Vec::new();
+        attrs.push(Attribute {
+            name: QualName::new(None, ns!(), local_name!("title")),
+            value: props.as_slice().join("; ").into(),
+        });
+        attrs.push(Attribute {
+            name: QualName::new(None, ns!(), local_name!("id")),
+            value: html_id.into(),
+        });
+        attrs.push(Attribute {
+            name: QualName::new(None, ns!(), local_name!("class")),
+            value: n.ocr_element_type.to_string().into(),
+        });
+        if let Some(lang) = &n.ocr_lang {
+            attrs.push(Attribute {
+                name: QualName::new(None, ns!(), local_name!("lang")),
+                value: lang.as_str().into(),
+            });
+        }
+
+        // s.push_str(&n.close_me())
+        let child_id = html.create_element(
+            QualName::new(
+                None,
+                ns!(html),
+                LocalName::from(n.html_element_type.as_str()),
+            ),
+            attrs,
+            Default::default(),
+        );
+        html.append(parent_id, AppendNode(child_id));
+        // push text as chlid if needed
+        if !n.ocr_text.is_empty() {
+            html.append(&child_id, AppendText(n.ocr_text.as_str().into()));
+        }
+        // s.push_str(&n.to_html_elt_with_id(html_id));
+        // then serialize my chlidren
+        for child in tree.children(node) {
+            add_ocr_tree(tree, child, ids, html, &child_id);
+            // s.push_str(&serialize_me_and_children(tree, child, ids));
+        }
     }
 }

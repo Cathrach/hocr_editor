@@ -1524,11 +1524,14 @@ name = "hocr_editor"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "ego-tree",
  "egui",
  "egui_extras",
+ "html5ever",
  "image",
  "itertools",
  "lazy_static",
+ "markup5ever",
  "rfd",
  "scraper",
 ]

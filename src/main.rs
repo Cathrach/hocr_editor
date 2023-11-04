@@ -1,17 +1,22 @@
 use eframe::egui;
 use egui::{FontData, FontDefinitions, FontFamily};
+use html5ever::interface::tree_builder::TreeSink;
+use html5ever::interface::AppendNode;
+use html5ever::interface::ElementFlags;
+use html5ever::{local_name, namespace_prefix, namespace_url, ns};
 use lazy_static::lazy_static;
 use rfd::FileDialog;
-use scraper::{ElementRef, Html, Selector};
+use scraper::Selector;
+use scraper::{ElementRef, Html};
 use std::cell::RefCell;
+use scraper::Node::*;
+use html5ever::{Attribute, LocalName, QualName};
 
 use std::fs::read_to_string;
-use std::ops::Deref;
 use std::path::PathBuf;
-use std::str::FromStr;
 
-use crate::ocr_element::{BBox, IntPos2, OCRClass, OCRElement, OCRProperty};
-use crate::ocr_element::{OCR_PAGE_SELECTOR, OCR_SELECTOR, OCR_WORD_SELECTOR};
+use crate::ocr_element::OCR_PAGE_SELECTOR;
+use crate::ocr_element::{OCRElement, OCRProperty};
 use crate::tree::Tree;
 mod ocr_element;
 mod tree;
@@ -37,14 +42,29 @@ fn main() {
 type InternalID = u32;
 
 // main struct: the state of our app
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct HOCREditor {
     file_path: Option<PathBuf>,
     html_tree: Option<Html>,
+    html_write_head: Html,
     image_path: Option<String>,
     selected_id: RefCell<Option<InternalID>>,
     file_path_changed: bool,
     internal_ocr_tree: RefCell<Tree<OCRElement>>,
+}
+
+impl Default for HOCREditor {
+    fn default() -> Self {
+        HOCREditor {
+            file_path: Default::default(),
+            html_tree: Default::default(),
+            html_write_head: Html::new_document(),
+            image_path: Default::default(),
+            selected_id: Default::default(),
+            file_path_changed: false,
+            internal_ocr_tree: Default::default(),
+        }
+    }
 }
 
 // when you select the bbox, you change select_id to assoc_id
@@ -119,57 +139,11 @@ fn load_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn get_image(root: scraper::ElementRef) -> String {
-    let ocr_props = root.value().attr("title").unwrap();
-    let mut ret = String::from("file://");
-    for pattern in ocr_props.split_terminator(";") {
-        if let Some((prefix, suffix)) = pattern.split_once(" ") {
-            if prefix == "image" {
-                ret.push_str(suffix.trim_matches('"'));
-                return ret;
-            }
-        }
-    }
-    // TODO: error handle
-    return ret;
-}
-fn get_bbox(root: scraper::ElementRef) -> ocr_element::BBox {
-    let ocr_props = root.value().attr("title").unwrap();
-    for pattern in ocr_props.split_terminator(";") {
-        if let Some((prefix, suffix)) = pattern.split_once(" ") {
-            if prefix == "bbox" {
-                let coords: Vec<u32> = suffix
-                    .split(" ")
-                    .map(|s| u32::from_str(s).unwrap())
-                    .collect();
-                return BBox {
-                    top_left: IntPos2 {
-                        x: coords[0],
-                        y: coords[1],
-                    },
-                    bottom_right: IntPos2 {
-                        x: coords[2],
-                        y: coords[3],
-                    },
-                };
-            }
-        }
-    }
-    return BBox::default();
-}
-
 impl HOCREditor {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         load_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         Self::default()
-    }
-    fn get_ocr_pages(&self) -> Vec<ElementRef<'_>> {
-        if let Some(html_tree) = &self.html_tree {
-            let ocr_pages = html_tree.select(&OCR_PAGE_SELECTOR);
-            return ocr_pages.collect::<Vec<ElementRef<'_>>>();
-        }
-        Vec::new()
     }
     /*
     fn get_selected_elt(&self) -> Option<&OCRElement> {
@@ -191,7 +165,7 @@ impl HOCREditor {
     fn render_tree_for_root(&self, root: InternalID, ui: &mut egui::Ui) {
         let ocr_tree = self.internal_ocr_tree.borrow();
         if let Some(elt) = ocr_tree.get_node(&root) {
-            let label_text = format!("{}{}", elt.ocr_element_type.to_string(), {
+            let label_text = format!("{}{}", elt.ocr_element_type.to_user_str(), {
                 let s = self.get_root_preview_text(root);
                 if !s.is_empty() {
                     format! {": {}", s}
@@ -221,7 +195,7 @@ impl HOCREditor {
                     }
                 });
             } else {
-                let childless_label_text = format!("{}{}", elt.ocr_element_type.to_string(), {
+                let childless_label_text = format!("{}{}", elt.ocr_element_type.to_user_str(), {
                     if !elt.ocr_text.is_empty() {
                         format! {": {}", elt.ocr_text}
                     } else {
@@ -241,15 +215,67 @@ impl HOCREditor {
     fn reparse_file(&mut self) {
         if let Some(path) = &self.file_path {
             let html_buffer = read_to_string(path).expect("Failed to read file");
-            self.html_tree = Some(Html::parse_document(&html_buffer));
-            if !self.get_ocr_pages().is_empty() {
-                self.image_path = Some(get_image(self.get_ocr_pages()[0]));
+            let mut html_tree = Html::parse_document(&html_buffer);
+            // read the ocr parts into an internal tree
+            self.internal_ocr_tree = RefCell::new(OCRElement::html_to_ocr_tree(html_tree.clone()));
+            for root_id in self.internal_ocr_tree.borrow().roots() {
+                if let Some(ocr_prop) = self
+                    .internal_ocr_tree
+                    .borrow()
+                    .get_node(root_id)
+                    .unwrap()
+                    .ocr_properties
+                    .get("image")
+                {
+                    match ocr_prop {
+                        OCRProperty::Image(path) => {
+                            let mut s = String::from("file://");
+                            s.push_str(path.to_str().unwrap());
+                            self.image_path = Some(s);
+                        }
+                        _ => (),
+                    }
+                }
             }
             self.file_path_changed = false;
-            if let Some(tree) = &self.html_tree {
-                self.internal_ocr_tree = RefCell::new(OCRElement::html_to_ocr_tree(tree.clone()));
-                // println!("{:?}", self.internal_ocr_tree);
+            // copy over the xml, doctype, and head into a new html document
+            let doc = html_tree.get_document();
+            // copy over the html node first
+            let root = html_tree.root_element().value();
+            let html_id = self.html_write_head.create_element(
+                root.name.clone(),
+                root.attrs().map(|tup| create_attr(tup)).collect(),
+                Default::default()
+            );
+            for child in html_tree.tree.get(doc).unwrap().children() {
+                match child.value() {
+                    Doctype(doc_node) => {
+                        println!("Found doctype {:?}", doc_node);
+                        self.html_write_head.append_doctype_to_document(
+                            doc_node.name.clone(),
+                            doc_node.public_id.clone(),
+                            doc_node.system_id.clone(),
+                        );
+                    },
+                    ProcessingInstruction(pi) => {
+                        println!("Found PI {:?}", pi);
+                        self.html_write_head
+                            .create_pi(pi.target.clone(), pi.data.clone());
+                    },
+                    Comment(comment) => {
+                        println!("Found comment {:?}", comment);
+                        self.html_write_head.create_comment(comment.comment.clone());
+                    },
+                    _ => println!("Debug extra node: {:?}", child.value()),
+                };
             }
+            self.html_write_head.append(&doc, AppendNode(html_id));
+            let head = html_tree
+                .select(&Selector::parse("head").unwrap())
+                .next()
+                .unwrap();
+            let root_elt_id = self.html_write_head.root_element().id();
+            append_elt_tree(&mut self.html_write_head, &root_elt_id, head);
         }
     }
 
@@ -334,12 +360,60 @@ impl eframe::App for HOCREditor {
                     .pick_file();
                 self.file_path_changed = true;
             }
+            if ui.button("Save HOCR File").clicked() {
+                if let Some(path) = &self.file_path {
+                    let new_path = path.with_file_name("test.html");
+                    let _ = std::fs::write(
+                        new_path,
+                        ocr_element::add_as_body(
+                            &self.internal_ocr_tree.borrow(),
+                            &self.html_write_head,
+                        )
+                        .html(),
+                    );
+                }
+            }
 
             // let's not re-parse the file every frame
             if self.file_path_changed {
                 self.reparse_file();
             }
             self.draw_img_and_bboxes(ui);
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
+                let mut next_sib = None;
+                if !self.selected_id.borrow().is_none() {
+                    let elt = self.selected_id.borrow().unwrap();
+                    next_sib = self.internal_ocr_tree.borrow().next_sibling(&elt);
+                    self.internal_ocr_tree.borrow_mut().delete_node(&elt);
+                }
+                *self.selected_id.borrow_mut() = next_sib;
+            }
         });
+    }
+}
+
+fn create_attr(tup: (&str, &str)) -> html5ever::Attribute {
+    html5ever::Attribute {
+        // TODO: idk if this is the right ns!
+        name: html5ever::QualName::new(None, ns!(), tup.0.into()),
+        value: tup.1.into(),
+    }
+}
+
+fn append_elt_tree(html: &mut scraper::Html, parent: &ego_tree::NodeId, elt: ElementRef) {
+    // recursively calls append on a copied element
+    // create attribute
+
+    let id = html.create_element(
+        elt.value().name.clone(),
+        elt.value().attrs().map(|tup| create_attr(tup)).collect(),
+        ElementFlags::default(),
+    );
+    html.append(parent, AppendNode(id));
+    // now take the children and pass them in
+    for child in elt.children() {
+        if let Some(elt) = ElementRef::wrap(child) {
+            append_elt_tree(html, &id, elt);
+        }
     }
 }
