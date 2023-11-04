@@ -1,6 +1,7 @@
 use crate::tree::Tree;
 use crate::InternalID;
 use eframe::egui;
+use egui::{Pos2, Rect};
 use html5ever::interface::tree_builder::TreeSink;
 use html5ever::interface::{AppendNode, AppendText};
 use html5ever::{local_name, namespace_url, ns};
@@ -78,9 +79,29 @@ impl FromStr for BBox {
     }
 }
 
+fn rect_from_attr(s: &str) -> Rect {
+    let coords: Vec<f32> = s
+        .trim()
+        .split(" ")
+        .take(4)
+        .map(|s| s.parse::<f32>().unwrap())
+        .collect();
+    Rect {
+        min: Pos2 {
+            x: coords[0],
+            y: coords[1],
+        },
+        max: Pos2 {
+            x: coords[2],
+            y: coords[3],
+        },
+    }
+}
+
 #[derive(Debug)]
 pub enum OCRProperty {
-    BBox(BBox),
+    // BBox(BBox),
+    BBox(Rect),
     Image(PathBuf),
     Float(f32),
     UInt(u32),
@@ -94,7 +115,11 @@ impl OCRProperty {
         match self {
             OCRProperty::BBox(bbox) => format!(
                 "{} {} {} {}",
-                bbox.top_left.x, bbox.top_left.y, bbox.bottom_right.x, bbox.bottom_right.y
+                // bbox.top_left.x, bbox.top_left.y, bbox.bottom_right.x, bbox.bottom_right.y
+                bbox.min.x as u32,
+                bbox.min.y as u32,
+                bbox.max.x as u32,
+                bbox.max.y as u32,
             ),
             OCRProperty::Image(path) => format!(r#""{}""#, path.display()),
             OCRProperty::Float(f) => f.to_string(),
@@ -262,7 +287,7 @@ impl OCRProperty {
                 let trimmed = prefix.trim();
                 let ocr_prop = match trimmed {
                     "image" => Some(OCRProperty::Image(PathBuf::from(suffix.trim_matches('"')))),
-                    "bbox" => Some(OCRProperty::BBox(BBox::from_str(suffix).unwrap())),
+                    "bbox" => Some(OCRProperty::BBox(rect_from_attr(suffix))),
                     "baseline" => {
                         let parts: Vec<&str> = suffix.splitn(2, " ").collect();
                         Some(OCRProperty::Baseline(
