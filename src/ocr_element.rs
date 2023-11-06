@@ -19,6 +19,7 @@ lazy_static! {
     pub static ref OCR_PAGE_SELECTOR: Selector = Selector::parse(".ocr_page").unwrap();
 }
 
+/*
 #[derive(Default, Debug)]
 pub struct IntPos2 {
     pub x: u32,
@@ -78,6 +79,7 @@ impl FromStr for BBox {
         };
     }
 }
+*/
 
 fn rect_from_attr(s: &str) -> Rect {
     let coords: Vec<f32> = s
@@ -102,7 +104,8 @@ fn rect_from_attr(s: &str) -> Rect {
 pub enum OCRProperty {
     // BBox(BBox),
     BBox(Rect),
-    Image(PathBuf),
+    // Image(PathBuf),
+    Image(String),
     Float(f32),
     UInt(u32),
     Int(i32),
@@ -111,7 +114,7 @@ pub enum OCRProperty {
 }
 
 impl OCRProperty {
-    fn to_str(&self) -> String {
+    pub fn to_str(&self) -> String {
         match self {
             OCRProperty::BBox(bbox) => format!(
                 "{} {} {} {}",
@@ -121,7 +124,8 @@ impl OCRProperty {
                 bbox.max.x as u32,
                 bbox.max.y as u32,
             ),
-            OCRProperty::Image(path) => format!(r#""{}""#, path.display()),
+            // OCRProperty::Image(path) => format!(r#""{}""#, path.display()),
+            OCRProperty::Image(path) => format!(r#""{}""#, path),
             OCRProperty::Float(f) => f.to_string(),
             OCRProperty::UInt(u) => u.to_string(),
             OCRProperty::Int(u) => u.to_string(),
@@ -208,7 +212,7 @@ impl OCRElement {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, PartialEq)]
 pub enum OCRClass {
     #[default]
     Page,
@@ -286,7 +290,7 @@ impl OCRProperty {
             if let Some((prefix, suffix)) = pattern.split_once(" ") {
                 let trimmed = prefix.trim();
                 let ocr_prop = match trimmed {
-                    "image" => Some(OCRProperty::Image(PathBuf::from(suffix.trim_matches('"')))),
+                    "image" => Some(OCRProperty::Image(String::from_str(suffix.trim_matches('"')).unwrap())),
                     "bbox" => Some(OCRProperty::BBox(rect_from_attr(suffix))),
                     "baseline" => {
                         let parts: Vec<&str> = suffix.splitn(2, " ").collect();
@@ -321,7 +325,7 @@ impl OCRProperty {
 pub fn add_as_body(tree: &Tree<OCRElement>, html_head: &scraper::Html) -> scraper::Html {
     let mut html_final = html_head.clone();
     // debug
-    // TODO: this guy doesn't have the doctype or XML comment
+    // TODO: this guy doesn't have the doctype
     println!("head of cloned: {}", html_final.html());
     let mut ids = HashMap::<String, u32>::new();
     ids.insert("page".to_string(), 1);
