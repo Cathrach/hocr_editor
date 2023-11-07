@@ -170,7 +170,7 @@ impl HOCREditor {
         let ocr_tree = self.internal_ocr_tree.borrow();
         if let Some(elt) = ocr_tree.get_node(&root) {
             let label_text = format!("{}{}", elt.ocr_element_type.to_user_str(), {
-                let s = self.get_root_preview_text(root);
+                let s = ocr_element::get_root_preview_text(&*ocr_tree, root);
                 if !s.is_empty() {
                     format! {": {}", s}
                 } else {
@@ -190,7 +190,12 @@ impl HOCREditor {
                         &mut *self.selected_id.borrow_mut(),
                         Some(root),
                         label_text,
-                    );
+                    )
+                    .context_menu(|ui| {
+                        ui.label("Merge below");
+                        ui.label("Merge above");
+                        ui.label("New child");
+                    });
                 })
                 // - body created by recursively calling renderTree on the children
                 .body(|ui| {
@@ -205,13 +210,18 @@ impl HOCREditor {
                     } else {
                         String::new()
                     }
-                },);
+                });
 
                 ui.selectable_value(
                     &mut *self.selected_id.borrow_mut(),
                     Some(root),
                     childless_label_text,
-                );
+                )
+                .context_menu(|ui| {
+                    ui.label("Merge below");
+                    ui.label("Merge above");
+                    ui.label("New child");
+                });
             }
         }
     }
@@ -436,31 +446,6 @@ impl HOCREditor {
         }
     }
 
-    fn build_text(&self, id: InternalID, count: &mut u32, s: &mut String) {
-        if let Some(node) = self.internal_ocr_tree.borrow().get_node(&id) {
-            if !node.ocr_text.trim().is_empty() {
-                s.push_str(node.ocr_text.as_str());
-                *count += 1;
-            }
-            if *count >= 2 {
-                return;
-            }
-            for child_id in self.internal_ocr_tree.borrow().children(&id) {
-                self.build_text(*child_id, count, s);
-                if *count >= 2 {
-                    return;
-                }
-            }
-        }
-    }
-
-    fn get_root_preview_text(&self, root: InternalID) -> String {
-        let mut s = String::new();
-        let mut count = 0;
-        self.build_text(root, &mut count, &mut s);
-        s
-    }
-
     fn open_file(&mut self) {
         self.file_path = FileDialog::new()
             .add_filter("hocr", &["html", "xml", "hocr"])
@@ -516,6 +501,9 @@ impl eframe::App for HOCREditor {
                             .spacing([40.0, 4.0])
                             .striped(true)
                             .show(ui, |ui| {
+                                ui.label("Type");
+                                ui.label(node.ocr_element_type.to_user_str());
+                                ui.end_row();
                                 for (name, prop) in &node.ocr_properties {
                                     ui.label(name);
                                     ui.add(egui::Label::new(prop.to_str()).wrap(true));
@@ -525,6 +513,7 @@ impl eframe::App for HOCREditor {
                                 if node.ocr_element_type == OCRClass::Word {
                                     ui.label("text");
                                     ui.label(&node.ocr_text);
+                                    ui.end_row();
                                 }
                             });
                     });
@@ -538,6 +527,19 @@ impl eframe::App for HOCREditor {
                             .spacing([40.0, 4.0])
                             .striped(true)
                             .show(ui, |ui| {
+                                ui.label("Type");
+                                egui::ComboBox::from_id_source("Type")
+                                    .selected_text(node.ocr_element_type.to_user_str())
+                                    .show_ui(ui, |ui| {
+                                        for variant in OCRClass::variants() {
+                                            ui.selectable_value(
+                                                &mut node.ocr_element_type,
+                                                variant.clone(),
+                                                variant.to_user_str(),
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
                                 for (name, prop) in node.ocr_properties.iter_mut() {
                                     ui.label(name);
                                     match prop {
@@ -571,19 +573,19 @@ impl eframe::App for HOCREditor {
                                                     );
                                                 });
                                             });
-                                        },
+                                        }
                                         OCRProperty::Image(path) => {
                                             ui.text_edit_singleline(path);
-                                        },
+                                        }
                                         OCRProperty::Float(f) => {
                                             ui.add(egui::DragValue::new(f).speed(0.1));
-                                        },
+                                        }
                                         OCRProperty::UInt(u) => {
                                             ui.add(egui::DragValue::new(u).speed(0.1));
-                                        },
+                                        }
                                         OCRProperty::Int(i) => {
                                             ui.add(egui::DragValue::new(i).speed(0.1));
-                                        },
+                                        }
                                         OCRProperty::Baseline(slope, con) => {
                                             ui.horizontal(|ui| {
                                                 ui.add(
@@ -597,7 +599,7 @@ impl eframe::App for HOCREditor {
                                                         .prefix("baseline y-int: "),
                                                 );
                                             });
-                                        },
+                                        }
                                         OCRProperty::ScanRes(dpi, dpi2) => {
                                             ui.horizontal(|ui| {
                                                 ui.add(
@@ -611,7 +613,7 @@ impl eframe::App for HOCREditor {
                                                         .prefix("also dpi?: "),
                                                 );
                                             });
-                                        },
+                                        }
                                     };
                                     ui.end_row();
                                 }

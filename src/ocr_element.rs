@@ -212,7 +212,7 @@ impl OCRElement {
     }
 }
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub enum OCRClass {
     #[default]
     Page,
@@ -226,6 +226,19 @@ pub enum OCRClass {
 }
 
 impl OCRClass {
+    pub fn variants() -> std::slice::Iter<'static, Self> {
+        [
+            Self::Page,
+            Self::CArea,
+            Self::Par,
+            Self::Line,
+            Self::Word,
+            Self::Separator,
+            Self::Photo,
+            Self::Caption,
+        ]
+        .iter()
+    }
     pub fn to_user_str(&self) -> String {
         match self {
             Self::CArea => "Area".to_string(),
@@ -290,7 +303,9 @@ impl OCRProperty {
             if let Some((prefix, suffix)) = pattern.split_once(" ") {
                 let trimmed = prefix.trim();
                 let ocr_prop = match trimmed {
-                    "image" => Some(OCRProperty::Image(String::from_str(suffix.trim_matches('"')).unwrap())),
+                    "image" => Some(OCRProperty::Image(
+                        String::from_str(suffix.trim_matches('"')).unwrap(),
+                    )),
                     "bbox" => Some(OCRProperty::BBox(rect_from_attr(suffix))),
                     "baseline" => {
                         let parts: Vec<&str> = suffix.splitn(2, " ").collect();
@@ -411,4 +426,29 @@ fn add_ocr_tree(
             // s.push_str(&serialize_me_and_children(tree, child, ids));
         }
     }
+}
+
+fn build_text(tree: &Tree<OCRElement>, id: InternalID, count: &mut u32, s: &mut String) {
+    if let Some(node) = tree.get_node(&id) {
+        if !node.ocr_text.trim().is_empty() {
+            s.push_str(node.ocr_text.as_str());
+            *count += 1;
+        }
+        if *count >= 2 {
+            return;
+        }
+        for child_id in tree.children(&id) {
+            build_text(tree, *child_id, count, s);
+            if *count >= 2 {
+                return;
+            }
+        }
+    }
+}
+
+pub(crate) fn get_root_preview_text(tree: &Tree<OCRElement>, root: InternalID) -> String {
+    let mut s = String::new();
+    let mut count = 0;
+    build_text(tree, root, &mut count, &mut s);
+    s
 }
