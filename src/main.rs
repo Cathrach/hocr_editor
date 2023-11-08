@@ -1,5 +1,5 @@
 use crate::ocr_element::{OCRClass, OCRElement, OCRProperty};
-use crate::tree::Tree;
+use crate::tree::{Position, Tree};
 use crate::Mode::Select;
 use eframe::egui;
 use egui::CursorIcon::{ResizeHorizontal, ResizeNeSw, ResizeNwSe, ResizeVertical};
@@ -14,6 +14,7 @@ use scraper::Node::*;
 use scraper::Selector;
 use scraper::{ElementRef, Html};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
@@ -54,22 +55,35 @@ struct HOCREditor {
     file_path: Option<PathBuf>,
     html_write_head: Html,
     image_path: Option<String>,
-    selected_id: RefCell<Option<InternalID>>,
     file_path_changed: bool,
     internal_ocr_tree: RefCell<Tree<OCRElement>>,
     mode: Mode,
+    // to allow the rendered tree to interact with state
+    // we update these first
+    // then when we detect updates we update the tree
+    selected_id: RefCell<Option<InternalID>>,
+    merge_id: RefCell<Option<InternalID>>,
+    merge_position: RefCell<Position>,
+    parent_id: RefCell<Option<InternalID>>,
+    sibling_id: RefCell<Option<InternalID>>,
+    sibling_position: RefCell<Position>,
 }
 
 impl Default for HOCREditor {
     fn default() -> Self {
         HOCREditor {
-            file_path: Default::default(),
+            file_path: None,
             html_write_head: Html::new_document(),
-            image_path: Default::default(),
-            selected_id: Default::default(),
+            merge_id: RefCell::new(None),
+            merge_position: RefCell::new(Position::Before),
             file_path_changed: false,
-            internal_ocr_tree: Default::default(),
+            internal_ocr_tree: RefCell::new(Default::default()),
             mode: Default::default(),
+            parent_id: RefCell::new(None),
+            sibling_id: RefCell::new(None),
+            sibling_position: RefCell::new(Position::Before),
+            image_path: None,
+            selected_id: RefCell::new(None),
         }
     }
 }
@@ -155,6 +169,70 @@ impl HOCREditor {
     }
     */
 
+    fn update_internal_tree(&self) {
+        self.merge();
+        self.make_new_sibling();
+        self.make_new_child();
+    }
+
+    fn make_new_child(&self) {
+        if !self.parent_id.borrow().is_none() {
+            let id = self.parent_id.borrow().unwrap();
+            // child bbox should be parent bbox
+            let bbox = self
+                .internal_ocr_tree
+                .borrow()
+                .get_node(&id)
+                .unwrap()
+                .ocr_properties
+                .get("bbox")
+                .unwrap()
+                .clone();
+            let mut properties = HashMap::new();
+            properties.insert("bbox".to_string(), bbox);
+            self.internal_ocr_tree.borrow_mut().push_child(
+                &self.parent_id.borrow().unwrap(),
+                OCRElement {
+                    html_element_type: "span".to_string(),
+                    ocr_element_type: OCRClass::Word,
+                    ocr_properties: properties,
+                    ocr_text: "".to_string(),
+                    ocr_lang: None,
+                },
+            );
+        }
+        *self.parent_id.borrow_mut() = None;
+    }
+
+    fn make_new_sibling(&self) {
+        if self.sibling_id.borrow().is_some() {
+            let id = self.sibling_id.borrow().unwrap();
+            let sibling = self
+                .internal_ocr_tree
+                .borrow()
+                .get_node(&id)
+                .unwrap()
+                .clone();
+            self.internal_ocr_tree.borrow_mut().add_sibling(
+                &id,
+                sibling,
+                &*self.sibling_position.borrow(),
+            );
+        }
+        *self.sibling_id.borrow_mut() = None;
+    }
+
+    fn merge(&self) {
+        if !self.merge_id.borrow().is_none() {
+            let id = self.merge_id.borrow().unwrap();
+            // reparent children of old node
+            self.internal_ocr_tree
+                .borrow_mut()
+                .merge_sibling(&id, &*self.merge_position.borrow());
+        }
+        *self.merge_id.borrow_mut() = None;
+    }
+
     // TODO: rename
     fn render_tree(&self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -192,9 +270,25 @@ impl HOCREditor {
                         label_text,
                     )
                     .context_menu(|ui| {
-                        ui.label("Merge below");
-                        ui.label("Merge above");
-                        ui.label("New child");
+                        if ui.button("Merge below").clicked() {
+                            *self.merge_id.borrow_mut() = Some(root);
+                            *self.merge_position.borrow_mut() = Position::After;
+                        }
+                        if ui.button("Merge above").clicked() {
+                            *self.merge_id.borrow_mut() = Some(root);
+                            *self.merge_position.borrow_mut() = Position::Before;
+                        }
+                        if ui.button("Sibling below").clicked() {
+                            *self.sibling_id.borrow_mut() = Some(root);
+                            *self.sibling_position.borrow_mut() = Position::After;
+                        }
+                        if ui.button("Sibling above").clicked() {
+                            *self.sibling_id.borrow_mut() = Some(root);
+                            *self.sibling_position.borrow_mut() = Position::Before;
+                        }
+                        if ui.button("New child").clicked() {
+                            *self.parent_id.borrow_mut() = Some(root);
+                        }
                     });
                 })
                 // - body created by recursively calling renderTree on the children
@@ -218,9 +312,25 @@ impl HOCREditor {
                     childless_label_text,
                 )
                 .context_menu(|ui| {
-                    ui.label("Merge below");
-                    ui.label("Merge above");
-                    ui.label("New child");
+                    if ui.button("Merge below").clicked() {
+                        *self.merge_id.borrow_mut() = Some(root);
+                        *self.merge_position.borrow_mut() = Position::After;
+                    }
+                    if ui.button("Merge above").clicked() {
+                        *self.merge_id.borrow_mut() = Some(root);
+                        *self.merge_position.borrow_mut() = Position::Before;
+                    }
+                    if ui.button("Sibling below").clicked() {
+                        *self.sibling_id.borrow_mut() = Some(root);
+                        *self.sibling_position.borrow_mut() = Position::After;
+                    }
+                    if ui.button("Sibling above").clicked() {
+                        *self.sibling_id.borrow_mut() = Some(root);
+                        *self.sibling_position.borrow_mut() = Position::Before;
+                    }
+                    if ui.button("New child").clicked() {
+                        *self.parent_id.borrow_mut() = Some(root);
+                    }
                 });
             }
         }
@@ -658,6 +768,7 @@ impl eframe::App for HOCREditor {
                 self.delete_selected();
             }
         });
+        self.update_internal_tree();
     }
 }
 

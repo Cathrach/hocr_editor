@@ -100,7 +100,7 @@ fn rect_from_attr(s: &str) -> Rect {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OCRProperty {
     // BBox(BBox),
     BBox(Rect),
@@ -138,7 +138,7 @@ impl OCRProperty {
 // internal representation of a node in the HTML tree containing OCR data
 // TODO: transform the html tree into a tree of these
 // TODO: subclasses because page, word, line have different properties
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct OCRElement {
     pub html_element_type: String,
     pub ocr_element_type: OCRClass,

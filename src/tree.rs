@@ -20,6 +20,7 @@ pub struct Node<D> {
     pub id: InternalID,
 }
 
+#[derive(Debug)]
 pub enum Position {
     Before,
     After,
@@ -57,6 +58,7 @@ impl<D> Tree<D> {
         if let Some(parent) = self.nodes.get_mut(id) {
             let new_id = self.curr_id;
             parent.children.push(new_id);
+            // println!("push_child: child has id {}", new_id);
             self.nodes.insert(
                 new_id,
                 Node {
@@ -77,7 +79,7 @@ impl<D> Tree<D> {
         &mut self,
         id: &InternalID,
         sibling: D,
-        pos: Position,
+        pos: &Position,
     ) -> Option<InternalID> {
         // if id exists, find node's parent
         // if node's parent doesn't exist, add a root
@@ -87,6 +89,8 @@ impl<D> Tree<D> {
         if let Some(node) = self.nodes.get(id) {
             if let Some(par_id) = node.parent {
                 let new_id = self.curr_id;
+                println!("add_sibling: sib has id {}", new_id);
+                println!("add_sibling: I have id {}", id);
                 self.nodes.insert(
                     new_id,
                     Node {
@@ -97,13 +101,7 @@ impl<D> Tree<D> {
                     },
                 );
                 self.curr_id += 1;
-                let par_child_index = self
-                    .nodes
-                    .get(&par_id)
-                    .unwrap()
-                    .children
-                    .binary_search(id)
-                    .unwrap();
+                let par_child_index = self.children(&par_id).position(|&x| x == *id).unwrap();
                 let insert_index = par_child_index
                     + match pos {
                         Position::After => 1,
@@ -113,7 +111,7 @@ impl<D> Tree<D> {
                     .get_mut(&par_id)
                     .unwrap()
                     .children
-                    .insert(insert_index, *id);
+                    .insert(insert_index, new_id);
                 return Some(new_id);
             } else {
                 return Some(self.add_root(sibling));
@@ -151,8 +149,58 @@ impl<D> Tree<D> {
         }
     }
 
+    // TODO: return the merged sibling
+    pub fn merge_sibling(&mut self, id: &InternalID, pos: &Position) {
+        let sib_id = match pos {
+            Position::After => self.next_sibling(id),
+            Position::Before => self.prev_sibling(id),
+        };
+        println!("Merging {} with {:?}", id, sib_id);
+        if sib_id.is_none() {
+            return;
+        }
+        let mut sib_children: Vec<InternalID> = self.children(&sib_id.unwrap()).cloned().collect();
+        // reparent each sib_child
+        for child_id in &sib_children {
+            if let Some(node) = self.nodes.get_mut(child_id) {
+                println!("merge sibling: reparented {} to {}", child_id, id);
+                node.parent = Some(*id);
+            }
+        }
+        // reparent id + pos' children after id's children
+        if let Some(node) = self.nodes.get_mut(id) {
+            match pos {
+                Position::After => node.children.extend(sib_children.iter()),
+                Position::Before => {
+                    sib_children.extend(node.children.clone());
+                    node.children = sib_children;
+                }
+            }
+            println!("merge_sibling: new children {:?}", node.children);
+        }
+        self.nodes.get_mut(&sib_id.unwrap()).unwrap().children = Vec::new();
+        self.delete_node(&sib_id.unwrap());
+    }
+
     pub fn next_sibling(&self, id: &InternalID) -> Option<InternalID> {
         self.next_siblings(id).next().copied()
+    }
+
+    pub fn prev_sibling(&self, id: &InternalID) -> Option<InternalID> {
+        if let Some(node) = self.nodes.get(id) {
+            let siblings = match node.parent {
+                Some(par_id) => &self.nodes.get(&par_id).unwrap().children,
+                None => &self.roots,
+            };
+            let my_index = siblings.iter().position(|&x| x == *id).unwrap();
+            if my_index > 0 {
+                Some(siblings[my_index - 1])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     pub fn next_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
