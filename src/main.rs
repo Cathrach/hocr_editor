@@ -176,22 +176,21 @@ impl HOCREditor {
     }
 
     fn make_new_child(&self) {
-        if !self.parent_id.borrow().is_none() {
-            let id = self.parent_id.borrow().unwrap();
+        if let Some(id) = self.parent_id.borrow() {
             // child bbox should be parent bbox
             let bbox = self
                 .internal_ocr_tree
                 .borrow()
                 .get_node(&id)
-                .unwrap()
+                .expect(format!("id {} doesn't exist in tree", id).as_str())
                 .ocr_properties
                 .get("bbox")
-                .unwrap()
+                .expect(format!("node {} doesn't have a bbox", id).as_str())
                 .clone();
             let mut properties = HashMap::new();
             properties.insert("bbox".to_string(), bbox);
             self.internal_ocr_tree.borrow_mut().push_child(
-                &self.parent_id.borrow().unwrap(),
+                &id,
                 OCRElement {
                     html_element_type: "span".to_string(),
                     ocr_element_type: OCRClass::Word,
@@ -205,13 +204,12 @@ impl HOCREditor {
     }
 
     fn make_new_sibling(&self) {
-        if self.sibling_id.borrow().is_some() {
-            let id = self.sibling_id.borrow().unwrap();
+        if let Some(id) = self.sibling_id.borrow() {
             let sibling = self
                 .internal_ocr_tree
                 .borrow()
                 .get_node(&id)
-                .unwrap()
+                .expect(format!("sibling id {} doesn't exist in tree", id).as_str())
                 .clone();
             self.internal_ocr_tree.borrow_mut().add_sibling(
                 &id,
@@ -223,8 +221,7 @@ impl HOCREditor {
     }
 
     fn merge(&self) {
-        if !self.merge_id.borrow().is_none() {
-            let id = self.merge_id.borrow().unwrap();
+        if let Some(id) = self.merge_id.borrow() {
             // reparent children of old node
             self.internal_ocr_tree
                 .borrow_mut()
@@ -342,12 +339,20 @@ impl HOCREditor {
             let mut html_tree = Html::parse_document(&html_buffer);
             // read the ocr parts into an internal tree
             self.internal_ocr_tree = RefCell::new(OCRElement::html_to_ocr_tree(html_tree.clone()));
+            // set the path of the displayed image
+            // TODO: actually make the loop do smth instead of just outputting last image
             for root_id in self.internal_ocr_tree.borrow().roots() {
                 if let Some(ocr_prop) = self
                     .internal_ocr_tree
                     .borrow()
                     .get_node(root_id)
-                    .unwrap()
+                    .expect(
+                        format!(
+                            "{} was marked as root id but doesn't exist in tree",
+                            root_id
+                        )
+                        .as_str(),
+                    )
                     .ocr_properties
                     .get("image")
                 {
@@ -371,7 +376,12 @@ impl HOCREditor {
                 root.attrs().map(|tup| create_attr(tup)).collect(),
                 Default::default(),
             );
-            for child in html_tree.tree.get(doc).unwrap().children() {
+            for child in html_tree
+                .tree
+                .get(doc)
+                .expect("HTML Tree didn't have document node")
+                .children()
+            {
                 match child.value() {
                     Doctype(doc_node) => {
                         println!("Found doctype {:?}", doc_node);
@@ -395,19 +405,21 @@ impl HOCREditor {
                 };
             }
             self.html_write_head.append(&doc, AppendNode(html_id));
-            let head = html_tree
-                .select(&Selector::parse("head").unwrap())
-                .next()
-                .unwrap();
-            let root_elt_id = self.html_write_head.root_element().id();
-            append_elt_tree(&mut self.html_write_head, &root_elt_id, head);
+            if let Some(head) = html_tree.select(&Selector::parse("head").unwrap()).next() {
+                let root_elt_id = self.html_write_head.root_element().id();
+                append_elt_tree(&mut self.html_write_head, &root_elt_id, head);
+            }
         }
     }
 
     // TODO: return the rect we drew if successful
     fn draw_bbox(&self, offset: egui::Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
         if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
-            if let OCRProperty::BBox(bbox) = node.ocr_properties.get("bbox").unwrap() {
+            if let OCRProperty::BBox(bbox) = node
+                .ocr_properties
+                .get("bbox")
+                .expect(format!("Node {} doesn't have a bbox", elt_id).as_str())
+            {
                 let egui_rect = bbox.translate(offset);
                 selectable_rect(
                     ui,
@@ -426,16 +438,11 @@ impl HOCREditor {
                 // ui.image(image_path);
                 let response = ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
                 // if we have a selected ID, draw bboxes for it and its siblings
-                if self.selected_id.borrow().is_none() {
-                    return;
-                } else {
-                    let elt = self.selected_id.borrow().unwrap();
+                if let Some(elt) = self.selected_id.borrow() {
                     let offset = response.rect.min.to_vec2();
                     // self.draw_bbox(offset, &elt, ui);
                     if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
-                        if let OCRProperty::BBox(bbox) =
-                            node.ocr_properties.get_mut("bbox").unwrap()
-                        {
+                        if let Some(OCRProperty::BBox(bbox)) = node.ocr_properties.get_mut("bbox") {
                             let egui_rect = bbox.translate(offset);
                             // sense drags around the border of the rect
                             // sense drags in any direction around the corners
@@ -576,8 +583,7 @@ impl HOCREditor {
 
     fn delete_selected(&mut self) {
         let mut next_sib = None;
-        if !self.selected_id.borrow().is_none() {
-            let elt = self.selected_id.borrow().unwrap();
+        if let Some(elt) = !self.selected_id.borrow() {
             next_sib = self.internal_ocr_tree.borrow().next_sibling(&elt);
             self.internal_ocr_tree.borrow_mut().delete_node(&elt);
         }
@@ -601,9 +607,8 @@ impl eframe::App for HOCREditor {
                 })
             })
         });
-        if !self.selected_id.borrow().is_none() {
+        if let Some(elt) = self.selected_id.borrow() {
             if self.mode == Mode::Select {
-                let elt = self.selected_id.borrow().unwrap();
                 if let Some(node) = self.internal_ocr_tree.borrow().get_node(&elt) {
                     egui::SidePanel::left("OCR Properties").show(ctx, |ui| {
                         egui::Grid::new("properties grid")
@@ -629,7 +634,6 @@ impl eframe::App for HOCREditor {
                     });
                 }
             } else if self.mode == Mode::Edit {
-                let elt = self.selected_id.borrow().unwrap();
                 if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
                     egui::SidePanel::left("OCR Properties").show(ctx, |ui| {
                         egui::Grid::new("properties grid")

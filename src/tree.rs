@@ -101,7 +101,9 @@ impl<D> Tree<D> {
                     },
                 );
                 self.curr_id += 1;
-                let par_child_index = self.children(&par_id).position(|&x| x == *id).unwrap();
+                let par_child_index = self.children(&par_id).position(|&x| x == *id).expect(
+                    format!("Couldn't find {} among parent {}'s children", id, par_id).as_str(),
+                );
                 let insert_index = par_child_index
                     + match pos {
                         Position::After => 1,
@@ -109,7 +111,7 @@ impl<D> Tree<D> {
                     };
                 self.nodes
                     .get_mut(&par_id)
-                    .unwrap()
+                    .expect(format!("parent {} of {} doesn't exist", par_id, id).as_str())
                     .children
                     .insert(insert_index, new_id);
                 return Some(new_id);
@@ -139,10 +141,19 @@ impl<D> Tree<D> {
     pub fn prev_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
         if let Some(node) = self.nodes.get(id) {
             let siblings = match node.parent {
-                Some(par_id) => &self.nodes.get(&par_id).unwrap().children,
+                Some(par_id) => {
+                    &self
+                        .nodes
+                        .get(&par_id)
+                        .expect(format!("node {}'s parent {} doesn't exist", id, par_id).as_str())
+                        .children
+                }
                 None => &self.roots,
             };
-            let my_index = siblings.iter().position(|&x| x == *id).unwrap();
+            let my_index = siblings
+                .iter()
+                .position(|&x| x == *id)
+                .expect(format!("couldn't find {} among siblings {:?}", id, siblings).as_str());
             return siblings[..my_index].iter();
         } else {
             return Default::default();
@@ -159,7 +170,8 @@ impl<D> Tree<D> {
         if sib_id.is_none() {
             return;
         }
-        let mut sib_children: Vec<InternalID> = self.children(&sib_id.unwrap()).cloned().collect();
+        let sibling_id = sib_id.expect("failed te return even though sibling was None");
+        let mut sib_children: Vec<InternalID> = self.children(&sibling_id).cloned().collect();
         // reparent each sib_child
         for child_id in &sib_children {
             if let Some(node) = self.nodes.get_mut(child_id) {
@@ -178,8 +190,12 @@ impl<D> Tree<D> {
             }
             println!("merge_sibling: new children {:?}", node.children);
         }
-        self.nodes.get_mut(&sib_id.unwrap()).unwrap().children = Vec::new();
-        self.delete_node(&sib_id.unwrap());
+
+        self.nodes
+            .get_mut(&sibling_id)
+            .expect(format!("sibling {} of {} didn't exist", sibling_id, id).as_str())
+            .children = Vec::new();
+        self.delete_node(&sibling_id);
     }
 
     pub fn next_sibling(&self, id: &InternalID) -> Option<InternalID> {
@@ -189,10 +205,19 @@ impl<D> Tree<D> {
     pub fn prev_sibling(&self, id: &InternalID) -> Option<InternalID> {
         if let Some(node) = self.nodes.get(id) {
             let siblings = match node.parent {
-                Some(par_id) => &self.nodes.get(&par_id).unwrap().children,
+                Some(par_id) => {
+                    &self
+                        .nodes
+                        .get(&par_id)
+                        .expect(format!("parent {} of {} doesn't exist", par_id, id).as_str())
+                        .children
+                }
                 None => &self.roots,
             };
-            let my_index = siblings.iter().position(|&x| x == *id).unwrap();
+            let my_index = siblings
+                .iter()
+                .position(|&x| x == *id)
+                .expect(format!("couldn't find {} among siblings {:?}", id, siblings).as_str());
             if my_index > 0 {
                 Some(siblings[my_index - 1])
             } else {
@@ -206,10 +231,20 @@ impl<D> Tree<D> {
     pub fn next_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
         if let Some(node) = self.nodes.get(id) {
             let siblings = match node.parent {
-                Some(par_id) => &self.nodes.get(&par_id).unwrap().children,
+                Some(par_id) => {
+                    &self
+                        .nodes
+                        .get(&par_id)
+                        .expect(format!("node {}'s parent {} doesn't exist", id, par_id).as_str())
+                        .children
+                }
                 None => &self.roots,
             };
-            let my_index = siblings.iter().position(|&x| x == *id).unwrap() + 1;
+            let my_index = siblings
+                .iter()
+                .position(|&x| x == *id)
+                .expect(format!("Couldn't find {} among siblings {:?}", id, siblings).as_str())
+                + 1;
             return siblings[my_index..].iter();
         } else {
             return Default::default();
@@ -238,7 +273,10 @@ impl<D> Tree<D> {
     // this is only a helper! never call it outside!
     fn delete_child_from_parent(&mut self, par_id: &InternalID, child_id: &InternalID) {
         let index = self.children(par_id).position(|&x| x == *child_id); // par.children.binary_search(child_id).unwrap();
-        let par = self.nodes.get_mut(par_id).unwrap();
+        let par = self
+            .nodes
+            .get_mut(par_id)
+            .expect(format!("child {}'s parent {} doesn't exist", child_id, par_id).as_str());
         if let Some(id) = index {
             par.children.remove(id);
         }
