@@ -81,22 +81,19 @@ impl FromStr for BBox {
 }
 */
 
-fn rect_from_attr(s: &str) -> Rect {
-    let coords: Vec<f32> = s
+fn rect_from_attr(s: &str) -> Result<Rect, String> {
+    let coords: Result<Vec<f32>, _> = s
         .trim()
         .split(" ")
         .take(4)
-        .map(|s| s.parse::<f32>().unwrap())
+        .map(|s| s.parse::<f32>())
         .collect();
-    Rect {
-        min: Pos2 {
-            x: coords[0],
-            y: coords[1],
-        },
-        max: Pos2 {
-            x: coords[2],
-            y: coords[3],
-        },
+    match coords {
+        Ok(v) => Ok(Rect {
+            min: Pos2 { x: v[0], y: v[1] },
+            max: Pos2 { x: v[2], y: v[3] },
+        }),
+        Err(e) => Err(format!("Failed conversion of {s} to f32: {e}")),
     }
 }
 
@@ -153,9 +150,12 @@ impl OCRElement {
         for child in elt_ref.children() {
             if let Some(child_ref) = ElementRef::wrap(child) {
                 if OCR_SELECTOR.matches(&child_ref) {
-                    let added_id = tree.push_child(&par_id, Self::html_elt_to_ocr_elt(child_ref));
-                    if let Some(add_id) = added_id {
-                        Self::add_children_to_ocr_tree(child_ref, add_id, tree);
+                    // only add child if all calls succeed
+                    let res = Self::html_elt_to_ocr_elt(child_ref)
+                        .and_then(|elt| tree.push_child(&par_id, elt))
+                        .map(|added_id| Self::add_children_to_ocr_tree(child_ref, added_id, tree));
+                    if res.is_err() {
+                        println!("{}", res.err().unwrap());
                     }
                 }
             }
@@ -166,7 +166,7 @@ impl OCRElement {
         root.text().filter(|s| !s.trim().is_empty()).join("")
     }
 
-    fn html_elt_to_ocr_elt(elt: ElementRef) -> OCRElement {
+    fn html_elt_to_ocr_elt(elt: ElementRef) -> Result<OCRElement, String> {
         let mut ocr_class = "";
         // assumes this element matcehs the OCR selector
         for class in elt.value().classes() {
@@ -175,15 +175,22 @@ impl OCRElement {
             }
         }
         // TODO: exit gracefully if parsing fails
+        if ocr_class.is_empty() {
+            return Err(String::from("Found no OCR class"));
+        }
 
-        OCRElement {
+        let ocr_elt_type: OCRClass = ocr_class
+            .parse()
+            .map_err(|_| format!("Failed to parse {} into OCR class", ocr_class))?;
+        let ocr_properties = if let Some(text) = elt.value().attr("title") {
+            OCRProperty::parse_properties(text).map_err(|x| x)?
+        } else {
+            return Err(String::from("No content in title attribute"));
+        };
+        Ok(OCRElement {
             html_element_type: elt.value().name().to_string(),
-            ocr_element_type: ocr_class.parse().unwrap(),
-            ocr_properties: if let Some(text) = elt.value().attr("title") {
-                OCRProperty::parse_properties(text)
-            } else {
-                HashMap::new()
-            },
+            ocr_element_type: ocr_elt_type,
+            ocr_properties,
             ocr_text: if OCR_WORD_SELECTOR.matches(&elt) {
                 Self::get_root_text(elt)
             } else {
@@ -194,7 +201,7 @@ impl OCRElement {
             } else {
                 None
             },
-        }
+        })
     }
 
     pub fn html_to_ocr_tree(html_tree: scraper::Html) -> Tree<OCRElement> {
@@ -205,8 +212,12 @@ impl OCRElement {
         let mut tree: Tree<OCRElement> = Tree::new();
         // TODO: don't just grab ocr_pages
         for page_elt in html_tree.select(&OCR_PAGE_SELECTOR) {
-            let root_id = tree.add_root(Self::html_elt_to_ocr_elt(page_elt));
-            Self::add_children_to_ocr_tree(page_elt, root_id, &mut tree);
+            // if any html_elt_to_ocr_elt returns an error, we do nothing, which is fine
+            let _ = Self::html_elt_to_ocr_elt(page_elt)
+                .map(|elt| tree.add_root(elt))
+                .map(|id| Self::add_children_to_ocr_tree(page_elt, id, &mut tree));
+            // let root_id = tree.add_root(Self::html_elt_to_ocr_elt(page_elt));
+            // Self::add_children_to_ocr_tree(page_elt, root_id, &mut tree);
         }
         tree
     }
@@ -262,8 +273,10 @@ impl OCRClass {
     }
 }
 
+pub struct ParseOCRError;
+
 impl FromStr for OCRClass {
-    type Err = ();
+    type Err = ParseOCRError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -275,7 +288,7 @@ impl FromStr for OCRClass {
             "ocr_photo" => Ok(Self::Photo),
             "ocr_separator" => Ok(Self::Separator),
             "ocr_caption" => Ok(Self::Caption),
-            _ => Err(()),
+            _ => Err(ParseOCRError),
         }
     }
 }
@@ -296,36 +309,45 @@ impl ToString for OCRClass {
 }
 
 impl OCRProperty {
-    pub fn parse_properties(title_content: &str) -> HashMap<String, OCRProperty> {
+    // Return an error if we don't have a bbox (it is required for every OCR element)
+    pub fn parse_properties(
+        title_content: &str,
+    ) -> Result<HashMap<String, OCRProperty>, String> {
         let mut property_dict = HashMap::new();
         for pattern in title_content.split_terminator("; ") {
             // println!("{}", pattern);
             if let Some((prefix, suffix)) = pattern.split_once(" ") {
                 let trimmed = prefix.trim();
                 let ocr_prop = match trimmed {
-                    "image" => Some(OCRProperty::Image(
-                        String::from_str(suffix.trim_matches('"')).unwrap(),
-                    )),
-                    "bbox" => Some(OCRProperty::BBox(rect_from_attr(suffix))),
+                    "image" => Some(OCRProperty::Image(String::from(suffix.trim_matches('"')))),
+                    "bbox" => match rect_from_attr(suffix) {
+                        Ok(rect) => Some(OCRProperty::BBox(rect)),
+                        Err(_) => None,
+                    },
                     "baseline" => {
-                        let parts: Vec<&str> = suffix.splitn(2, " ").collect();
-                        Some(OCRProperty::Baseline(
-                            parts[0].parse::<f32>().unwrap(),
-                            parts[1].parse::<f32>().unwrap(),
-                        ))
+                        let parts: Result<Vec<f32>, _> =
+                            suffix.splitn(2, " ").map(|x| x.parse::<f32>()).collect();
+                        match parts {
+                            Ok(v) => Some(OCRProperty::Baseline(v[0], v[1])),
+                            Err(_) => None,
+                        }
                     }
-                    "ppageno" => Some(OCRProperty::UInt(suffix.parse::<u32>().unwrap())),
+                    "ppageno" | "x_wconf" => match suffix.parse::<u32>() {
+                        Ok(v) => Some(OCRProperty::UInt(v)),
+                        Err(_) => None,
+                    },
                     "scan_res" => {
-                        let parts: Vec<&str> = suffix.splitn(2, " ").collect();
-                        Some(OCRProperty::ScanRes(
-                            parts[0].parse::<u32>().unwrap(),
-                            parts[1].parse::<u32>().unwrap(),
-                        ))
+                        let parts: Result<Vec<u32>, _> =
+                            suffix.splitn(2, " ").map(|x| x.parse::<u32>()).collect();
+                        match parts {
+                            Ok(v) => Some(OCRProperty::ScanRes(v[0], v[1])),
+                            Err(_) => None,
+                        }
                     }
-                    "x_size" | "x_descenders" | "x_ascenders" => {
-                        Some(OCRProperty::Float(suffix.parse::<f32>().unwrap()))
-                    }
-                    "x_wconf" => Some(OCRProperty::UInt(suffix.parse::<u32>().unwrap())),
+                    "x_size" | "x_descenders" | "x_ascenders" => match suffix.parse::<f32>() {
+                        Ok(v) => Some(OCRProperty::Float(v)),
+                        Err(_) => None,
+                    },
                     _ => None,
                 };
                 if !ocr_prop.is_none() {
@@ -333,7 +355,10 @@ impl OCRProperty {
                 }
             }
         }
-        property_dict
+        if property_dict.get("bbox").is_none() {
+            return Err(String::from("Couldn't find bbox in properties!"));
+        }
+        Ok(property_dict)
     }
 }
 

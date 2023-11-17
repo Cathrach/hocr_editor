@@ -176,7 +176,7 @@ impl HOCREditor {
     }
 
     fn make_new_child(&self) {
-        if let Some(id) = self.parent_id.borrow() {
+        if let Some(id) = *self.parent_id.borrow() {
             // child bbox should be parent bbox
             let bbox = self
                 .internal_ocr_tree
@@ -204,7 +204,7 @@ impl HOCREditor {
     }
 
     fn make_new_sibling(&self) {
-        if let Some(id) = self.sibling_id.borrow() {
+        if let Some(id) = *self.sibling_id.borrow() {
             let sibling = self
                 .internal_ocr_tree
                 .borrow()
@@ -221,7 +221,7 @@ impl HOCREditor {
     }
 
     fn merge(&self) {
-        if let Some(id) = self.merge_id.borrow() {
+        if let Some(id) = *self.merge_id.borrow() {
             // reparent children of old node
             self.internal_ocr_tree
                 .borrow_mut()
@@ -438,7 +438,8 @@ impl HOCREditor {
                 // ui.image(image_path);
                 let response = ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
                 // if we have a selected ID, draw bboxes for it and its siblings
-                if let Some(elt) = self.selected_id.borrow() {
+                if self.selected_id.borrow().is_some() {
+                    let elt = self.selected_id.borrow().unwrap();
                     let offset = response.rect.min.to_vec2();
                     // self.draw_bbox(offset, &elt, ui);
                     if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
@@ -583,7 +584,7 @@ impl HOCREditor {
 
     fn delete_selected(&mut self) {
         let mut next_sib = None;
-        if let Some(elt) = !self.selected_id.borrow() {
+        if let Some(elt) = *self.selected_id.borrow() {
             next_sib = self.internal_ocr_tree.borrow().next_sibling(&elt);
             self.internal_ocr_tree.borrow_mut().delete_node(&elt);
         }
@@ -607,7 +608,7 @@ impl eframe::App for HOCREditor {
                 })
             })
         });
-        if let Some(elt) = self.selected_id.borrow() {
+        if let Some(elt) = *self.selected_id.borrow() {
             if self.mode == Mode::Select {
                 if let Some(node) = self.internal_ocr_tree.borrow().get_node(&elt) {
                     egui::SidePanel::left("OCR Properties").show(ctx, |ui| {

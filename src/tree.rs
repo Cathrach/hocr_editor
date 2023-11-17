@@ -54,11 +54,10 @@ impl<D> Tree<D> {
     }
 
     // add a child to the end of id's children
-    pub fn push_child(&mut self, id: &InternalID, child: D) -> Option<InternalID> {
+    pub fn push_child(&mut self, id: &InternalID, child: D) -> Result<InternalID, String> {
         if let Some(parent) = self.nodes.get_mut(id) {
             let new_id = self.curr_id;
             parent.children.push(new_id);
-            // println!("push_child: child has id {}", new_id);
             self.nodes.insert(
                 new_id,
                 Node {
@@ -69,25 +68,27 @@ impl<D> Tree<D> {
                 },
             );
             self.curr_id += 1;
-            return Some(new_id);
+            Ok(new_id)
+        } else {
+            Err(format!("push_child: node {} doesn't exist!", id))
         }
-        None
     }
 
     // add a sibling to a node
+    // return error if id doesn't exist in the tree
     pub fn add_sibling(
         &mut self,
         id: &InternalID,
         sibling: D,
         pos: &Position,
-    ) -> Option<InternalID> {
+    ) -> Result<InternalID, String> {
         // if id exists, find node's parent
         // if node's parent doesn't exist, add a root
         // if node's parent exists
         // insert sibling into the hash map
         // insert sibling's ID into the parent's child vector before id
         if let Some(node) = self.nodes.get(id) {
-            if let Some(par_id) = node.parent {
+            return if let Some(par_id) = node.parent {
                 let new_id = self.curr_id;
                 println!("add_sibling: sib has id {}", new_id);
                 println!("add_sibling: I have id {}", id);
@@ -101,6 +102,7 @@ impl<D> Tree<D> {
                     },
                 );
                 self.curr_id += 1;
+                // this error is fatal because it means our internal representation of the tree is wrong
                 let par_child_index = self.children(&par_id).position(|&x| x == *id).expect(
                     format!("Couldn't find {} among parent {}'s children", id, par_id).as_str(),
                 );
@@ -114,50 +116,55 @@ impl<D> Tree<D> {
                     .expect(format!("parent {} of {} doesn't exist", par_id, id).as_str())
                     .children
                     .insert(insert_index, new_id);
-                return Some(new_id);
+                Ok(new_id)
             } else {
-                return Some(self.add_root(sibling));
-            }
+                Ok(self.add_root(sibling))
+            };
         } else {
-            None
+            Err(format!("add_sibling: node {} doesn't exist!", id))
         }
     }
 
     // get a (ref to) node value by ID -- wrapper around hash map function
     pub fn get_node(&self, id: &InternalID) -> Option<&D> {
-        match self.nodes.get(id) {
-            Some(node) => Some(&node.value),
-            None => None,
-        }
+        self.nodes.get(id).map(|node| &node.value)
     }
 
+    // TODO: I decided that if the node doesn't exist, the children should just be an empty iterator
     pub fn children(&self, id: &InternalID) -> Iter<'_, InternalID> {
-        match self.nodes.get(id) {
-            Some(node) => node.children.iter(),
-            None => Default::default(),
-        }
+        self.nodes
+            .get(id)
+            .map(|node| node.children.iter())
+            .unwrap_or_default()
     }
 
+    // if the node doesn't exist, it has no siblings, but we can run into errors in the tree
+    fn siblings(&self, id: &InternalID) -> Option<&Vec<InternalID>> {
+        self.nodes.get(id).map(|node| {
+            if let Some(par_id) = node.parent {
+                let par_node = self
+                    .nodes
+                    .get(&par_id)
+                    .expect(format!("node {}'s parent {} doesn't exist", id, par_id).as_str());
+                &par_node.children
+            } else {
+                &self.roots
+            }
+        })
+    }
+
+    // empty iterator if node doesn't exist
+    // actually fails if the tree is wrong
     pub fn prev_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
-        if let Some(node) = self.nodes.get(id) {
-            let siblings = match node.parent {
-                Some(par_id) => {
-                    &self
-                        .nodes
-                        .get(&par_id)
-                        .expect(format!("node {}'s parent {} doesn't exist", id, par_id).as_str())
-                        .children
-                }
-                None => &self.roots,
-            };
-            let my_index = siblings
-                .iter()
-                .position(|&x| x == *id)
-                .expect(format!("couldn't find {} among siblings {:?}", id, siblings).as_str());
-            return siblings[..my_index].iter();
-        } else {
-            return Default::default();
-        }
+        self.siblings(id)
+            .map(|siblings| {
+                let my_index = siblings
+                    .iter()
+                    .position(|&x| x == *id)
+                    .expect(format!("couldn't find {} among siblings {:?}", id, siblings).as_str());
+                siblings[..my_index].iter()
+            })
+            .unwrap_or_default()
     }
 
     // TODO: return the merged sibling
@@ -229,26 +236,15 @@ impl<D> Tree<D> {
     }
 
     pub fn next_siblings(&self, id: &InternalID) -> Iter<'_, InternalID> {
-        if let Some(node) = self.nodes.get(id) {
-            let siblings = match node.parent {
-                Some(par_id) => {
-                    &self
-                        .nodes
-                        .get(&par_id)
-                        .expect(format!("node {}'s parent {} doesn't exist", id, par_id).as_str())
-                        .children
-                }
-                None => &self.roots,
-            };
-            let my_index = siblings
-                .iter()
-                .position(|&x| x == *id)
-                .expect(format!("Couldn't find {} among siblings {:?}", id, siblings).as_str())
-                + 1;
-            return siblings[my_index..].iter();
-        } else {
-            return Default::default();
-        }
+        self.siblings(id)
+            .map(|siblings| {
+                let my_index =
+                    siblings.iter().position(|&x| x == *id).expect(
+                        format!("couldn't find {} among siblings {:?}", id, siblings).as_str(),
+                    ) + 1;
+                siblings[..my_index].iter()
+            })
+            .unwrap_or_default()
     }
 
     pub fn has_children(&self, id: &InternalID) -> bool {
