@@ -431,7 +431,13 @@ impl HOCREditor {
     }
 
     // sense drags around the bbox
-    fn drag_bbox(&mut self, offset: egui::Vec2, elt: &InternalID, ui: &mut egui::Ui, response: egui::Response) {
+    fn drag_bbox(
+        &mut self,
+        offset: egui::Vec2,
+        elt: &InternalID,
+        ui: &mut egui::Ui,
+        response: egui::Response,
+    ) {
         if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
             if let Some(OCRProperty::BBox(bbox)) = node.ocr_properties.get_mut("bbox") {
                 let egui_rect = bbox.translate(offset);
@@ -536,7 +542,6 @@ impl HOCREditor {
                     .max(0.0);
             }
         }
-
     }
 
     fn draw_img_and_bboxes(&mut self, ui: &mut egui::Ui) {
@@ -770,6 +775,43 @@ impl eframe::App for HOCREditor {
             // move bboxes by using the arrow keys
             // left and right go to previous and next siblings (if they exist)
             // up and down go to parent and first child resp
+            if self.selected_id.borrow().is_some() {
+                let sel_id = self.selected_id.borrow().unwrap();
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)) {
+                    *self.selected_id.borrow_mut() = Some(
+                        self.internal_ocr_tree
+                            .borrow()
+                            .prev_sibling(&sel_id)
+                            .unwrap_or(sel_id),
+                    );
+                }
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)) {
+                    *self.selected_id.borrow_mut() = Some(
+                        self.internal_ocr_tree
+                            .borrow()
+                            .next_sibling(&sel_id)
+                            .unwrap_or(sel_id),
+                    );
+                }
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
+                    *self.selected_id.borrow_mut() = Some(
+                        self.internal_ocr_tree
+                            .borrow()
+                            .parent(&sel_id)
+                            .unwrap_or(sel_id),
+                    );
+                }
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
+                    *self.selected_id.borrow_mut() = Some(
+                        *self
+                            .internal_ocr_tree
+                            .borrow()
+                            .children(&sel_id)
+                            .next()
+                            .unwrap_or(&sel_id),
+                    );
+                }
+            }
             // for now: you can edit the selected bbox by pressing "e"
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::E)) {
                 self.mode = Mode::Edit;

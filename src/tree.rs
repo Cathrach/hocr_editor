@@ -138,6 +138,10 @@ impl<D> Tree<D> {
             .unwrap_or_default()
     }
 
+    pub fn parent(&self, id: &InternalID) -> Option<InternalID> {
+        self.nodes.get(id).map(|node| node.parent).unwrap_or(None)
+    }
+
     // if the node doesn't exist, it has no siblings, but we can run into errors in the tree
     fn siblings(&self, id: &InternalID) -> Option<&Vec<InternalID>> {
         self.nodes.get(id).map(|node| {

@@ -310,9 +310,7 @@ impl ToString for OCRClass {
 
 impl OCRProperty {
     // Return an error if we don't have a bbox (it is required for every OCR element)
-    pub fn parse_properties(
-        title_content: &str,
-    ) -> Result<HashMap<String, OCRProperty>, String> {
+    pub fn parse_properties(title_content: &str) -> Result<HashMap<String, OCRProperty>, String> {
         let mut property_dict = HashMap::new();
         for pattern in title_content.split_terminator("; ") {
             // println!("{}", pattern);
