@@ -1,6 +1,5 @@
 use crate::ocr_element::{OCRClass, OCRElement, OCRProperty};
 use crate::tree::{Position, Tree};
-use crate::Mode::Select;
 use eframe::egui;
 use egui::CursorIcon::{ResizeHorizontal, ResizeNeSw, ResizeNwSe, ResizeVertical};
 use egui::{FontData, FontDefinitions, FontFamily, Pos2, Rect, Sense, Vec2};
@@ -189,7 +188,7 @@ impl HOCREditor {
                 .clone();
             let mut properties = HashMap::new();
             properties.insert("bbox".to_string(), bbox);
-            self.internal_ocr_tree.borrow_mut().push_child(
+            let _ = self.internal_ocr_tree.borrow_mut().push_child(
                 &id,
                 OCRElement {
                     html_element_type: "span".to_string(),
@@ -211,7 +210,7 @@ impl HOCREditor {
                 .get_node(&id)
                 .expect(format!("sibling id {} doesn't exist in tree", id).as_str())
                 .clone();
-            self.internal_ocr_tree.borrow_mut().add_sibling(
+            let _ = self.internal_ocr_tree.borrow_mut().add_sibling(
                 &id,
                 sibling,
                 &*self.sibling_position.borrow(),
@@ -431,9 +430,119 @@ impl HOCREditor {
         }
     }
 
+    // sense drags around the bbox
+    fn drag_bbox(&mut self, offset: egui::Vec2, elt: &InternalID, ui: &mut egui::Ui, response: egui::Response) {
+        if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
+            if let Some(OCRProperty::BBox(bbox)) = node.ocr_properties.get_mut("bbox") {
+                let egui_rect = bbox.translate(offset);
+                // sense drags around the border of the rect
+                // sense drags in any direction around the corners
+                //                 let point_rect = Rect::from_center_size(point_in_screen, size);
+                //                 let point_id = response.id.with(i);
+                //                 let point_response = ui.interact(point_rect, point_id, Sense::drag());
+                //
+                //                 *point += point_response.drag_delta();
+                //                 *point = to_screen.from().clamp(*point);
+                let top_left = Pos2 {
+                    x: egui_rect.left(),
+                    y: egui_rect.top(),
+                };
+                let top_right = Pos2 {
+                    x: egui_rect.right(),
+                    y: egui_rect.top(),
+                };
+                let bottom_left = Pos2 {
+                    x: egui_rect.left(),
+                    y: egui_rect.bottom(),
+                };
+                let bottom_right = Pos2 {
+                    x: egui_rect.right(),
+                    y: egui_rect.bottom(),
+                };
+                // TODO: is this a good size?
+                let size = Vec2::splat(16.0);
+                let top_left_rect = Rect::from_center_size(top_left, size);
+                let top_right_rect = Rect::from_center_size(top_right, size);
+                let bottom_left_rect = Rect::from_center_size(bottom_left, size);
+                let bottom_right_rect = Rect::from_center_size(bottom_right, size);
+                let top_left_id = response.id.with(0);
+                let top_right_id = response.id.with(1);
+                let bottom_left_id = response.id.with(2);
+                let bottom_right_id = response.id.with(3);
+                let top_left_response = ui
+                    .interact(top_left_rect, top_left_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeNwSe);
+                let top_right_response = ui
+                    .interact(top_right_rect, top_right_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeNeSw);
+                let bottom_left_response = ui
+                    .interact(bottom_left_rect, bottom_left_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeNeSw);
+                let bottom_right_response = ui
+                    .interact(bottom_right_rect, bottom_right_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeNwSe);
+                // sense drags in only vertical or horiz at the sides
+                let top_rect = Rect::from_min_max(
+                    top_left + Vec2 { x: 8.0, y: -8.0 },
+                    top_right + Vec2 { x: -8.0, y: 8.0 },
+                );
+                let bottom_rect = Rect::from_min_max(
+                    bottom_left + Vec2 { x: 8.0, y: -8.0 },
+                    bottom_right + Vec2 { x: -8.0, y: 8.0 },
+                );
+                let left_rect = Rect::from_min_max(
+                    top_left + Vec2 { x: -8.0, y: 8.0 },
+                    bottom_left + Vec2 { x: 8.0, y: -8.0 },
+                );
+                let right_rect = Rect::from_min_max(
+                    top_right + Vec2 { x: -8.0, y: -8.0 },
+                    bottom_right + Vec2 { x: 8.0, y: 8.0 },
+                );
+                let top_id = response.id.with(4);
+                let bottom_id = response.id.with(5);
+                let left_id = response.id.with(6);
+                let right_id = response.id.with(7);
+                let top_response = ui
+                    .interact(top_rect, top_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeVertical);
+                let right_response = ui
+                    .interact(right_rect, right_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeHorizontal);
+                let left_response = ui
+                    .interact(left_rect, left_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeHorizontal);
+                let bottom_response = ui
+                    .interact(bottom_rect, bottom_id, Sense::drag())
+                    .on_hover_and_drag_cursor(ResizeVertical);
+                bbox.min.x = (bbox.min.x
+                    + top_left_response.drag_delta().x
+                    + bottom_left_response.drag_delta().x
+                    + left_response.drag_delta().x)
+                    .max(0.0);
+                bbox.min.y = (bbox.min.y
+                    + top_left_response.drag_delta().y
+                    + top_right_response.drag_delta().y
+                    + top_response.drag_delta().y)
+                    .max(0.0);
+                bbox.max.x = (bbox.max.x
+                    + top_right_response.drag_delta().x
+                    + bottom_right_response.drag_delta().x
+                    + right_response.drag_delta().x)
+                    .max(0.0);
+                bbox.max.y = (bbox.max.y
+                    + bottom_left_response.drag_delta().y
+                    + bottom_right_response.drag_delta().y
+                    + bottom_response.drag_delta().y)
+                    .max(0.0);
+            }
+        }
+
+    }
+
     fn draw_img_and_bboxes(&mut self, ui: &mut egui::Ui) {
         // ui.label(format!("Selected ID: {}", self.selected_id.borrow()));
-        if let Some(image_path) = &self.image_path {
+        if self.image_path.is_some() {
+            let image_path = self.image_path.clone().unwrap();
             egui::ScrollArea::both().show(ui, |ui| {
                 // ui.image(image_path);
                 let response = ui.add(egui::Image::from_uri(image_path).fit_to_original_size(1.0));
@@ -441,111 +550,7 @@ impl HOCREditor {
                 if self.selected_id.borrow().is_some() {
                     let elt = self.selected_id.borrow().unwrap();
                     let offset = response.rect.min.to_vec2();
-                    // self.draw_bbox(offset, &elt, ui);
-                    if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
-                        if let Some(OCRProperty::BBox(bbox)) = node.ocr_properties.get_mut("bbox") {
-                            let egui_rect = bbox.translate(offset);
-                            // sense drags around the border of the rect
-                            // sense drags in any direction around the corners
-                            //                 let point_rect = Rect::from_center_size(point_in_screen, size);
-                            //                 let point_id = response.id.with(i);
-                            //                 let point_response = ui.interact(point_rect, point_id, Sense::drag());
-                            //
-                            //                 *point += point_response.drag_delta();
-                            //                 *point = to_screen.from().clamp(*point);
-                            let top_left = Pos2 {
-                                x: egui_rect.left(),
-                                y: egui_rect.top(),
-                            };
-                            let top_right = Pos2 {
-                                x: egui_rect.right(),
-                                y: egui_rect.top(),
-                            };
-                            let bottom_left = Pos2 {
-                                x: egui_rect.left(),
-                                y: egui_rect.bottom(),
-                            };
-                            let bottom_right = Pos2 {
-                                x: egui_rect.right(),
-                                y: egui_rect.bottom(),
-                            };
-                            // TODO: is this a good size?
-                            let size = Vec2::splat(16.0);
-                            let top_left_rect = Rect::from_center_size(top_left, size);
-                            let top_right_rect = Rect::from_center_size(top_right, size);
-                            let bottom_left_rect = Rect::from_center_size(bottom_left, size);
-                            let bottom_right_rect = Rect::from_center_size(bottom_right, size);
-                            let top_left_id = response.id.with(0);
-                            let top_right_id = response.id.with(1);
-                            let bottom_left_id = response.id.with(2);
-                            let bottom_right_id = response.id.with(3);
-                            let top_left_response = ui
-                                .interact(top_left_rect, top_left_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeNwSe);
-                            let top_right_response = ui
-                                .interact(top_right_rect, top_right_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeNeSw);
-                            let bottom_left_response = ui
-                                .interact(bottom_left_rect, bottom_left_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeNeSw);
-                            let bottom_right_response = ui
-                                .interact(bottom_right_rect, bottom_right_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeNwSe);
-                            // sense drags in only vertical or horiz at the sides
-                            let top_rect = Rect::from_min_max(
-                                top_left + Vec2 { x: 8.0, y: -8.0 },
-                                top_right + Vec2 { x: -8.0, y: 8.0 },
-                            );
-                            let bottom_rect = Rect::from_min_max(
-                                bottom_left + Vec2 { x: 8.0, y: -8.0 },
-                                bottom_right + Vec2 { x: -8.0, y: 8.0 },
-                            );
-                            let left_rect = Rect::from_min_max(
-                                top_left + Vec2 { x: -8.0, y: 8.0 },
-                                bottom_left + Vec2 { x: 8.0, y: -8.0 },
-                            );
-                            let right_rect = Rect::from_min_max(
-                                top_right + Vec2 { x: -8.0, y: -8.0 },
-                                bottom_right + Vec2 { x: 8.0, y: 8.0 },
-                            );
-                            let top_id = response.id.with(4);
-                            let bottom_id = response.id.with(5);
-                            let left_id = response.id.with(6);
-                            let right_id = response.id.with(7);
-                            let top_response = ui
-                                .interact(top_rect, top_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeVertical);
-                            let right_response = ui
-                                .interact(right_rect, right_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeHorizontal);
-                            let left_response = ui
-                                .interact(left_rect, left_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeHorizontal);
-                            let bottom_response = ui
-                                .interact(bottom_rect, bottom_id, Sense::drag())
-                                .on_hover_and_drag_cursor(ResizeVertical);
-                            bbox.min.x = (bbox.min.x
-                                + top_left_response.drag_delta().x
-                                + bottom_left_response.drag_delta().x
-                                + left_response.drag_delta().x)
-                                .max(0.0);
-                            bbox.min.y = (bbox.min.y
-                                + top_left_response.drag_delta().y
-                                + top_right_response.drag_delta().y
-                                + top_response.drag_delta().y)
-                                .max(0.0);
-                            bbox.max.x = (bbox.max.x
-                                + top_right_response.drag_delta().x
-                                + bottom_right_response.drag_delta().x
-                                + right_response.drag_delta().x)
-                                .max(0.0);
-                            bbox.max.y = (bbox.max.y
-                                + bottom_left_response.drag_delta().y
-                                + bottom_right_response.drag_delta().y
-                                + bottom_response.drag_delta().y)
-                                .max(0.0);
-                        }
-                    }
+                    self.drag_bbox(offset, &elt, ui, response);
                     self.draw_bbox(offset, &elt, ui);
                     // only draw siblings if we are selecting
                     if self.mode == Mode::Select {
@@ -698,9 +703,11 @@ impl eframe::App for HOCREditor {
                                         OCRProperty::UInt(u) => {
                                             ui.add(egui::DragValue::new(u).speed(0.1));
                                         }
+                                        /*
                                         OCRProperty::Int(i) => {
                                             ui.add(egui::DragValue::new(i).speed(0.1));
                                         }
+                                        */
                                         OCRProperty::Baseline(slope, con) => {
                                             ui.horizontal(|ui| {
                                                 ui.add(
@@ -760,6 +767,9 @@ impl eframe::App for HOCREditor {
             if self.file_path_changed {
                 self.reparse_file();
             }
+            // move bboxes by using the arrow keys
+            // left and right go to previous and next siblings (if they exist)
+            // up and down go to parent and first child resp
             // for now: you can edit the selected bbox by pressing "e"
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::E)) {
                 self.mode = Mode::Edit;

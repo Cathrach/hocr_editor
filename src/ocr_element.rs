@@ -10,7 +10,7 @@ use itertools::Itertools;
 
 use lazy_static::lazy_static;
 use scraper::{ElementRef, Selector};
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, str::FromStr};
 
 lazy_static! {
     pub static ref OCR_SELECTOR: Selector =
@@ -105,7 +105,7 @@ pub enum OCRProperty {
     Image(String),
     Float(f32),
     UInt(u32),
-    Int(i32),
+    // Int(i32),
     Baseline(f32, f32),
     ScanRes(u32, u32),
 }
@@ -125,7 +125,7 @@ impl OCRProperty {
             OCRProperty::Image(path) => format!(r#""{}""#, path),
             OCRProperty::Float(f) => f.to_string(),
             OCRProperty::UInt(u) => u.to_string(),
-            OCRProperty::Int(u) => u.to_string(),
+            // OCRProperty::Int(u) => u.to_string(),
             OCRProperty::Baseline(f1, f2) => format!("{} {}", f1, f2),
             OCRProperty::ScanRes(f1, f2) => format!("{} {}", f1, f2),
         }

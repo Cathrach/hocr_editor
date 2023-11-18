@@ -242,7 +242,7 @@ impl<D> Tree<D> {
                     siblings.iter().position(|&x| x == *id).expect(
                         format!("couldn't find {} among siblings {:?}", id, siblings).as_str(),
                     ) + 1;
-                siblings[..my_index].iter()
+                siblings[my_index..].iter()
             })
             .unwrap_or_default()
     }
