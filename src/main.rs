@@ -2,7 +2,7 @@ use crate::ocr_element::{OCRClass, OCRElement, OCRProperty};
 use crate::tree::{Position, Tree};
 use eframe::egui;
 use egui::CursorIcon::{ResizeHorizontal, ResizeNeSw, ResizeNwSe, ResizeVertical};
-use egui::{FontData, FontDefinitions, FontFamily, Pos2, Rect, Sense, Vec2};
+use egui::{FontData, FontDefinitions, FontFamily, Pos2, Rect, Sense, Shape, Vec2};
 use html5ever::interface::tree_builder::TreeSink;
 use html5ever::interface::AppendNode;
 use html5ever::interface::ElementFlags;
@@ -27,6 +27,7 @@ lazy_static! {
     static ref BAD_STROKE: egui::Stroke = egui::Stroke::new(STROKE_WEIGHT, egui::Color32::RED);
     static ref CLICKED_STROKE: egui::Stroke =
         egui::Stroke::new(STROKE_WEIGHT, egui::Color32::BLACK);
+    static ref BASELINE_STROKE: egui::Stroke = egui::Stroke::new(1.0, egui::Color32::RED);
     static ref FOCUS_FILL: egui::Color32 = egui::Color32::LIGHT_BLUE.gamma_multiply(0.3);
     static ref BAD_FILL: egui::Color32 = egui::Color32::RED.gamma_multiply(0.3);
 }
@@ -433,14 +434,38 @@ impl HOCREditor {
         }
     }
 
+    fn draw_baseline(&self, offset: Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
+        // draw the baseline
+        if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
+            // the bottom left of the bounding box is the origin, which means we also have to grab the bbox
+            if let Some(OCRProperty::Baseline(slope, y_int)) = node.ocr_properties.get("baseline") {
+                if let OCRProperty::BBox(bbox) = node.ocr_properties.get("bbox").expect(format!("Node {} doesn't have a bbox", elt_id).as_str()) {
+                    let translated = bbox.translate(offset);
+                    println!("screen coord bbox {:?}", translated);
+                    /*
+                    let (_, painter) = ui.allocate_painter(Vec2::new(translated.width(), translated.height()), Sense {
+                        click: false,
+                        drag: false,
+                        focusable: false,
+                    });
+                    */
+                    let y_0 = y_int + translated.bottom();
+                    let l_point = Pos2 { x: translated.left(), y: y_0 };
+                    let r_point = Pos2 { x: translated.right(), y: y_0 + translated.width() * slope };
+                    println!("left {:?}, right {:?}", l_point, r_point);
+                    // let line = Shape::line_segment([l_point, r_point], *BASELINE_STROKE);
+                    ui.painter().line_segment([l_point, r_point], *BASELINE_STROKE);
+                }
+            }
+        }
+    }
     // TODO: return the rect we drew if successful
     fn draw_bbox(&self, offset: Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
         if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
             if let OCRProperty::BBox(bbox) = node
                 .ocr_properties
                 .get("bbox")
-                .expect(format!("Node {} doesn't have a bbox", elt_id).as_str())
-            {
+                .expect(format!("Node {} doesn't have a bbox", elt_id).as_str()) {
                 let not_confident = {
                     let wconf = match node.ocr_properties.get("x_wconf") {
                         Some(OCRProperty::UInt(i)) => *i,
@@ -587,6 +612,7 @@ impl HOCREditor {
                     let offset = response.rect.min.to_vec2();
                     self.drag_bbox(offset, &elt, ui, response);
                     self.draw_bbox(offset, &elt, ui);
+                    self.draw_baseline(offset, &elt, ui);
                     // only draw siblings if we are selecting
                     if self.mode == Mode::Select {
                         for sib_elt in self
