@@ -174,7 +174,6 @@ impl OCRElement {
                 ocr_class = class;
             }
         }
-        // TODO: exit gracefully if parsing fails
         if ocr_class.is_empty() {
             return Err(String::from("Found no OCR class"));
         }

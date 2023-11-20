@@ -583,12 +583,32 @@ impl HOCREditor {
 
     fn save_file(&self) {
         if let Some(path) = &self.file_path {
-            let new_path = path.with_file_name("test.html");
+            // let new_path = path.with_file_name("test.html");
             let _ = std::fs::write(
-                new_path,
+                // new_path,
+                path,
                 ocr_element::add_as_body(&self.internal_ocr_tree.borrow(), &self.html_write_head)
                     .html(),
             );
+        }
+    }
+
+    fn save_file_as(&self) {
+        if self.file_path.is_some() {
+            let path = FileDialog::new()
+                .add_filter("hocr", &["html", "xml", "hocr"])
+                .save_file();
+            if let Some(fp) = path {
+                let _ = std::fs::write(
+                    // new_path,
+                    fp,
+                    ocr_element::add_as_body(
+                        &self.internal_ocr_tree.borrow(),
+                        &self.html_write_head,
+                    )
+                    .html(),
+                );
+            }
         }
     }
 
@@ -615,10 +635,15 @@ impl eframe::App for HOCREditor {
                         self.save_file();
                         ui.close_menu();
                     }
+                    if ui.button("Save as").clicked() {
+                        self.save_file_as();
+                        ui.close_menu();
+                    }
                 })
             })
         });
         if let Some(elt) = *self.selected_id.borrow() {
+            /*
             if self.mode == Mode::Select {
                 if let Some(node) = self.internal_ocr_tree.borrow().get_node(&elt) {
                     egui::SidePanel::left("OCR Properties").show(ctx, |ui| {
@@ -645,119 +670,124 @@ impl eframe::App for HOCREditor {
                     });
                 }
             } else if self.mode == Mode::Edit {
-                if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
-                    egui::SidePanel::left("OCR Properties").show(ctx, |ui| {
-                        egui::Grid::new("properties grid")
-                            .num_columns(2)
-                            .spacing([40.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label("Type");
-                                egui::ComboBox::from_id_source("Type")
-                                    .selected_text(node.ocr_element_type.to_user_str())
-                                    .show_ui(ui, |ui| {
-                                        for variant in OCRClass::variants() {
-                                            ui.selectable_value(
-                                                &mut node.ocr_element_type,
-                                                variant.clone(),
-                                                variant.to_user_str(),
+             */
+            if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
+                egui::SidePanel::left("OCR Properties").show(ctx, |ui| {
+                    egui::Grid::new("properties grid")
+                        .num_columns(2)
+                        .spacing([40.0, 4.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label("Type");
+                            egui::ComboBox::from_id_source("Type")
+                                .selected_text(node.ocr_element_type.to_user_str())
+                                .show_ui(ui, |ui| {
+                                    for variant in OCRClass::variants() {
+                                        ui.selectable_value(
+                                            &mut node.ocr_element_type,
+                                            variant.clone(),
+                                            variant.to_user_str(),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                            for (name, prop) in node.ocr_properties.iter_mut() {
+                                ui.label(name);
+                                match prop {
+                                    OCRProperty::BBox(egui::Rect {
+                                        min: egui::Pos2 { x: min_x, y: min_y },
+                                        max: egui::Pos2 { x: max_x, y: max_y },
+                                    }) => {
+                                        ui.vertical(|ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.add(
+                                                    egui::DragValue::new(min_x)
+                                                        .speed(0.1)
+                                                        .prefix("tl x: "),
+                                                );
+                                                ui.add(
+                                                    egui::DragValue::new(min_y)
+                                                        .speed(0.1)
+                                                        .prefix("tl y: "),
+                                                );
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.add(
+                                                    egui::DragValue::new(max_x)
+                                                        .speed(0.1)
+                                                        .prefix("br x: "),
+                                                );
+                                                ui.add(
+                                                    egui::DragValue::new(max_y)
+                                                        .speed(0.1)
+                                                        .prefix("br y: "),
+                                                );
+                                            });
+                                        });
+                                    }
+                                    OCRProperty::Image(path) => {
+                                        ui.text_edit_singleline(path);
+                                    }
+                                    OCRProperty::Float(f) => {
+                                        ui.add(egui::DragValue::new(f).speed(0.1));
+                                    }
+                                    OCRProperty::UInt(u) => {
+                                        ui.add(egui::DragValue::new(u).speed(0.1));
+                                    }
+                                    /*
+                                    OCRProperty::Int(i) => {
+                                        ui.add(egui::DragValue::new(i).speed(0.1));
+                                    }
+                                    */
+                                    OCRProperty::Baseline(slope, con) => {
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                egui::DragValue::new(slope)
+                                                    .speed(0.1)
+                                                    .prefix("baseline slope: "),
                                             );
-                                        }
-                                    });
+                                            ui.add(
+                                                egui::DragValue::new(con)
+                                                    .speed(0.1)
+                                                    .prefix("baseline y-int: "),
+                                            );
+                                        });
+                                    }
+                                    OCRProperty::ScanRes(dpi, dpi2) => {
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                egui::DragValue::new(dpi)
+                                                    .speed(0.1)
+                                                    .prefix("dpi: "),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(dpi2)
+                                                    .speed(0.1)
+                                                    .prefix("also dpi?: "),
+                                            );
+                                        });
+                                    }
+                                };
                                 ui.end_row();
-                                for (name, prop) in node.ocr_properties.iter_mut() {
-                                    ui.label(name);
-                                    match prop {
-                                        OCRProperty::BBox(egui::Rect {
-                                            min: egui::Pos2 { x: min_x, y: min_y },
-                                            max: egui::Pos2 { x: max_x, y: max_y },
-                                        }) => {
-                                            ui.vertical(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.add(
-                                                        egui::DragValue::new(min_x)
-                                                            .speed(0.1)
-                                                            .prefix("tl x: "),
-                                                    );
-                                                    ui.add(
-                                                        egui::DragValue::new(min_y)
-                                                            .speed(0.1)
-                                                            .prefix("tl y: "),
-                                                    );
-                                                });
-                                                ui.horizontal(|ui| {
-                                                    ui.add(
-                                                        egui::DragValue::new(max_x)
-                                                            .speed(0.1)
-                                                            .prefix("br x: "),
-                                                    );
-                                                    ui.add(
-                                                        egui::DragValue::new(max_y)
-                                                            .speed(0.1)
-                                                            .prefix("br y: "),
-                                                    );
-                                                });
-                                            });
-                                        }
-                                        OCRProperty::Image(path) => {
-                                            ui.text_edit_singleline(path);
-                                        }
-                                        OCRProperty::Float(f) => {
-                                            ui.add(egui::DragValue::new(f).speed(0.1));
-                                        }
-                                        OCRProperty::UInt(u) => {
-                                            ui.add(egui::DragValue::new(u).speed(0.1));
-                                        }
-                                        /*
-                                        OCRProperty::Int(i) => {
-                                            ui.add(egui::DragValue::new(i).speed(0.1));
-                                        }
-                                        */
-                                        OCRProperty::Baseline(slope, con) => {
-                                            ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::DragValue::new(slope)
-                                                        .speed(0.1)
-                                                        .prefix("baseline slope: "),
-                                                );
-                                                ui.add(
-                                                    egui::DragValue::new(con)
-                                                        .speed(0.1)
-                                                        .prefix("baseline y-int: "),
-                                                );
-                                            });
-                                        }
-                                        OCRProperty::ScanRes(dpi, dpi2) => {
-                                            ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::DragValue::new(dpi)
-                                                        .speed(0.1)
-                                                        .prefix("dpi: "),
-                                                );
-                                                ui.add(
-                                                    egui::DragValue::new(dpi2)
-                                                        .speed(0.1)
-                                                        .prefix("also dpi?: "),
-                                                );
-                                            });
-                                        }
-                                    };
-                                    ui.end_row();
+                            }
+                            // TODO: pressing delete here deletes the element! what should I do
+                            if node.ocr_element_type == OCRClass::Word {
+                                ui.label("text");
+                                let response = ui.text_edit_singleline(&mut node.ocr_text);
+                                if response.changed() {
+                                    node.ocr_properties
+                                        .insert(String::from("x_wconf"), OCRProperty::UInt(100));
                                 }
-                                // TODO: pressing delete here deletes the element! what should I do
-                                if node.ocr_element_type == OCRClass::Word {
-                                    ui.label("text");
-                                    ui.text_edit_singleline(&mut node.ocr_text);
-                                    ui.end_row();
-                                }
-                                // if editable, the numbers turn into drag values
-                                // wconf is bounded by 0 and 100
-                                // update while editing is false
-                                // the text is textedit box for words
-                            })
-                    });
-                }
+                                ui.end_row();
+                            }
+                            // if editable, the numbers turn into drag values
+                            // wconf is bounded by 0 and 100
+                            // update while editing is false
+                            // the text is textedit box for words
+                        })
+                });
             }
+            // }
         }
         // TODO: you can also add a new property???
         egui::SidePanel::right("HOCR Tree").show(ctx, |ui| {
