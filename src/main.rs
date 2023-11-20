@@ -24,9 +24,11 @@ mod tree;
 lazy_static! {
     static ref UNCLICKED_STROKE: egui::Stroke =
         egui::Stroke::new(STROKE_WEIGHT, egui::Color32::LIGHT_BLUE);
+    static ref BAD_STROKE: egui::Stroke = egui::Stroke::new(STROKE_WEIGHT, egui::Color32::RED);
     static ref CLICKED_STROKE: egui::Stroke =
         egui::Stroke::new(STROKE_WEIGHT, egui::Color32::BLACK);
     static ref FOCUS_FILL: egui::Color32 = egui::Color32::LIGHT_BLUE.gamma_multiply(0.3);
+    static ref BAD_FILL: egui::Color32 = egui::Color32::RED.gamma_multiply(0.3);
 }
 
 fn main() {
@@ -45,7 +47,7 @@ type InternalID = u32;
 enum Mode {
     #[default]
     Select,
-    Edit,
+    SingleSelect,
 }
 
 // main struct: the state of our app
@@ -89,30 +91,45 @@ impl Default for HOCREditor {
 
 // when you select the bbox, you change select_id to assoc_id
 struct SelectableRect {
-    adj_bbox: egui::Rect,
+    adj_bbox: Rect,
     selected: bool,
+    is_bad: bool,
 }
 
 impl SelectableRect {
-    fn new(adj_bbox: egui::Rect, selected: bool) -> Self {
-        Self { adj_bbox, selected }
+    fn new(adj_bbox: Rect, selected: bool, is_bad: bool) -> Self {
+        Self {
+            adj_bbox,
+            selected,
+            is_bad,
+        }
     }
 }
 
 const STROKE_WEIGHT: f32 = 4.0;
 const UNFOCUS_FILL: egui::Color32 = egui::Color32::TRANSPARENT;
+const BAD_WCONF_THRESHOLD: u32 = 80;
 
+// turn red if wconf is low?
 impl egui::Widget for SelectableRect {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let Self { adj_bbox, selected } = self;
-        let response = ui.allocate_rect(adj_bbox, egui::Sense::click());
+        let Self {
+            adj_bbox,
+            selected,
+            is_bad,
+        } = self;
+        let response = ui.allocate_rect(adj_bbox, Sense::click());
         let stroke: egui::Stroke = if selected {
             *CLICKED_STROKE
+        } else if is_bad {
+            *BAD_STROKE
         } else {
             *UNCLICKED_STROKE
         };
         let fill: egui::Color32 = if response.hovered() || selected {
             *FOCUS_FILL
+        } else if is_bad {
+            *BAD_FILL
         } else {
             UNFOCUS_FILL
         };
@@ -128,11 +145,16 @@ impl egui::Widget for SelectableRect {
 // this mimics selectable_value in egui but adapts it to SelectableRect instead of SelectableLabel
 fn selectable_rect<Value: PartialEq>(
     ui: &mut egui::Ui,
-    rect: egui::Rect,
+    rect: Rect,
     current_value: &mut Value,
     selected_value: Value,
+    is_bad: bool,
 ) -> egui::Response {
-    let mut response = ui.add(SelectableRect::new(rect, *current_value == selected_value));
+    let mut response = ui.add(SelectableRect::new(
+        rect,
+        *current_value == selected_value,
+        is_bad,
+    ));
     if response.clicked() && *current_value != selected_value {
         *current_value = selected_value;
         response.mark_changed();
@@ -412,19 +434,27 @@ impl HOCREditor {
     }
 
     // TODO: return the rect we drew if successful
-    fn draw_bbox(&self, offset: egui::Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
+    fn draw_bbox(&self, offset: Vec2, elt_id: &InternalID, ui: &mut egui::Ui) {
         if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
             if let OCRProperty::BBox(bbox) = node
                 .ocr_properties
                 .get("bbox")
                 .expect(format!("Node {} doesn't have a bbox", elt_id).as_str())
             {
+                let not_confident = {
+                    let wconf = match node.ocr_properties.get("x_wconf") {
+                        Some(OCRProperty::UInt(i)) => *i,
+                        _ => 100,
+                    };
+                    wconf < BAD_WCONF_THRESHOLD
+                };
                 let egui_rect = bbox.translate(offset);
                 selectable_rect(
                     ui,
                     egui_rect,
                     &mut *self.selected_id.borrow_mut(),
                     Some(*elt_id),
+                    not_confident,
                 );
             }
         }
@@ -433,7 +463,7 @@ impl HOCREditor {
     // sense drags around the bbox
     fn drag_bbox(
         &mut self,
-        offset: egui::Vec2,
+        offset: Vec2,
         elt: &InternalID,
         ui: &mut egui::Ui,
         response: egui::Response,
@@ -622,6 +652,84 @@ impl HOCREditor {
     }
 }
 
+fn render_property(prop: &mut OCRProperty, ui: &mut egui::Ui) {
+    match prop {
+        OCRProperty::BBox(Rect {
+                              min: Pos2 { x: min_x, y: min_y },
+                              max: Pos2 { x: max_x, y: max_y },
+                          }) => {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(min_x)
+                            .speed(0.1)
+                            .prefix("tl x: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(min_y)
+                            .speed(0.1)
+                            .prefix("tl y: "),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(max_x)
+                            .speed(0.1)
+                            .prefix("br x: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(max_y)
+                            .speed(0.1)
+                            .prefix("br y: "),
+                    );
+                });
+            });
+        }
+        OCRProperty::Image(path) => {
+            ui.text_edit_singleline(path);
+        }
+        OCRProperty::Float(f) => {
+            ui.add(egui::DragValue::new(f).speed(0.1));
+        }
+        OCRProperty::UInt(u) => {
+            ui.add(egui::DragValue::new(u).speed(0.1));
+        }
+        /*
+        OCRProperty::Int(i) => {
+            ui.add(egui::DragValue::new(i).speed(0.1));
+        }
+        */
+        OCRProperty::Baseline(slope, con) => {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::DragValue::new(slope)
+                        .speed(0.1)
+                        .prefix("baseline slope: "),
+                );
+                ui.add(
+                    egui::DragValue::new(con)
+                        .speed(0.1)
+                        .prefix("baseline y-int: "),
+                );
+            });
+        }
+        OCRProperty::ScanRes(dpi, dpi2) => {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::DragValue::new(dpi)
+                        .speed(0.1)
+                        .prefix("dpi: "),
+                );
+                ui.add(
+                    egui::DragValue::new(dpi2)
+                        .speed(0.1)
+                        .prefix("also dpi?: "),
+                );
+            });
+        }
+    };
+}
+
 impl eframe::App for HOCREditor {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -693,84 +801,9 @@ impl eframe::App for HOCREditor {
                             ui.end_row();
                             for (name, prop) in node.ocr_properties.iter_mut() {
                                 ui.label(name);
-                                match prop {
-                                    OCRProperty::BBox(egui::Rect {
-                                        min: egui::Pos2 { x: min_x, y: min_y },
-                                        max: egui::Pos2 { x: max_x, y: max_y },
-                                    }) => {
-                                        ui.vertical(|ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::DragValue::new(min_x)
-                                                        .speed(0.1)
-                                                        .prefix("tl x: "),
-                                                );
-                                                ui.add(
-                                                    egui::DragValue::new(min_y)
-                                                        .speed(0.1)
-                                                        .prefix("tl y: "),
-                                                );
-                                            });
-                                            ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::DragValue::new(max_x)
-                                                        .speed(0.1)
-                                                        .prefix("br x: "),
-                                                );
-                                                ui.add(
-                                                    egui::DragValue::new(max_y)
-                                                        .speed(0.1)
-                                                        .prefix("br y: "),
-                                                );
-                                            });
-                                        });
-                                    }
-                                    OCRProperty::Image(path) => {
-                                        ui.text_edit_singleline(path);
-                                    }
-                                    OCRProperty::Float(f) => {
-                                        ui.add(egui::DragValue::new(f).speed(0.1));
-                                    }
-                                    OCRProperty::UInt(u) => {
-                                        ui.add(egui::DragValue::new(u).speed(0.1));
-                                    }
-                                    /*
-                                    OCRProperty::Int(i) => {
-                                        ui.add(egui::DragValue::new(i).speed(0.1));
-                                    }
-                                    */
-                                    OCRProperty::Baseline(slope, con) => {
-                                        ui.horizontal(|ui| {
-                                            ui.add(
-                                                egui::DragValue::new(slope)
-                                                    .speed(0.1)
-                                                    .prefix("baseline slope: "),
-                                            );
-                                            ui.add(
-                                                egui::DragValue::new(con)
-                                                    .speed(0.1)
-                                                    .prefix("baseline y-int: "),
-                                            );
-                                        });
-                                    }
-                                    OCRProperty::ScanRes(dpi, dpi2) => {
-                                        ui.horizontal(|ui| {
-                                            ui.add(
-                                                egui::DragValue::new(dpi)
-                                                    .speed(0.1)
-                                                    .prefix("dpi: "),
-                                            );
-                                            ui.add(
-                                                egui::DragValue::new(dpi2)
-                                                    .speed(0.1)
-                                                    .prefix("also dpi?: "),
-                                            );
-                                        });
-                                    }
-                                };
+                                render_property(prop, ui);
                                 ui.end_row();
                             }
-                            // TODO: pressing delete here deletes the element! what should I do
                             if node.ocr_element_type == OCRClass::Word {
                                 ui.label("text");
                                 let response = ui.text_edit_singleline(&mut node.ocr_text);
@@ -844,7 +877,7 @@ impl eframe::App for HOCREditor {
             }
             // for now: you can edit the selected bbox by pressing "e"
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::E)) {
-                self.mode = Mode::Edit;
+                self.mode = Mode::SingleSelect;
             }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 self.mode = Mode::Select;
