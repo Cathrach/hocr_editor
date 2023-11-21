@@ -111,6 +111,12 @@ pub enum OCRProperty {
 }
 
 impl OCRProperty {
+    pub fn as_bbox(&self) -> Option<&Rect> {
+        match self {
+            OCRProperty::BBox(bbox) => Some(bbox),
+            _ => None
+        }
+    }
     pub fn to_str(&self) -> String {
         match self {
             OCRProperty::BBox(bbox) => format!(

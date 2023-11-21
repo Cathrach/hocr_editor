@@ -439,9 +439,13 @@ impl HOCREditor {
         if let Some(node) = self.internal_ocr_tree.borrow().get_node(elt_id) {
             // the bottom left of the bounding box is the origin, which means we also have to grab the bbox
             if let Some(OCRProperty::Baseline(slope, y_int)) = node.ocr_properties.get("baseline") {
-                if let OCRProperty::BBox(bbox) = node.ocr_properties.get("bbox").expect(format!("Node {} doesn't have a bbox", elt_id).as_str()) {
+                if let OCRProperty::BBox(bbox) = node
+                    .ocr_properties
+                    .get("bbox")
+                    .expect(format!("Node {} doesn't have a bbox", elt_id).as_str())
+                {
                     let translated = bbox.translate(offset);
-                    println!("screen coord bbox {:?}", translated);
+                    // println!("screen coord bbox {:?}", translated);
                     /*
                     let (_, painter) = ui.allocate_painter(Vec2::new(translated.width(), translated.height()), Sense {
                         click: false,
@@ -450,11 +454,18 @@ impl HOCREditor {
                     });
                     */
                     let y_0 = y_int + translated.bottom();
-                    let l_point = Pos2 { x: translated.left(), y: y_0 };
-                    let r_point = Pos2 { x: translated.right(), y: y_0 + translated.width() * slope };
-                    println!("left {:?}, right {:?}", l_point, r_point);
+                    let l_point = Pos2 {
+                        x: translated.left(),
+                        y: y_0,
+                    };
+                    let r_point = Pos2 {
+                        x: translated.right(),
+                        y: y_0 + translated.width() * slope,
+                    };
+                    // println!("left {:?}, right {:?}", l_point, r_point);
                     // let line = Shape::line_segment([l_point, r_point], *BASELINE_STROKE);
-                    ui.painter().line_segment([l_point, r_point], *BASELINE_STROKE);
+                    ui.painter()
+                        .line_segment([l_point, r_point], *BASELINE_STROKE);
                 }
             }
         }
@@ -465,7 +476,8 @@ impl HOCREditor {
             if let OCRProperty::BBox(bbox) = node
                 .ocr_properties
                 .get("bbox")
-                .expect(format!("Node {} doesn't have a bbox", elt_id).as_str()) {
+                .expect(format!("Node {} doesn't have a bbox", elt_id).as_str())
+            {
                 let not_confident = {
                     let wconf = match node.ocr_properties.get("x_wconf") {
                         Some(OCRProperty::UInt(i)) => *i,
@@ -485,13 +497,59 @@ impl HOCREditor {
         }
     }
 
+    fn drag_baseline(
+        &mut self,
+        offset: Vec2,
+        elt_id: &InternalID,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+    ) {
+        // draw the baseline
+        if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(elt_id) {
+            let translated = node.ocr_properties.get("bbox").unwrap().as_bbox().unwrap().translate(offset);
+            // the bottom left of the bounding box is the origin, which means we also have to grab the bbox
+            if let Some(OCRProperty::Baseline(slope, y_int)) =
+                node.ocr_properties.get_mut("baseline")
+            {
+                    // println!("screen coord bbox {:?}", translated);
+                    let y_0 = *y_int + translated.bottom();
+                    let y_1 = y_0 + translated.width() * *slope;
+                    let l_point = Pos2 {
+                        x: translated.left(),
+                        y: y_0,
+                    };
+                    let r_point = Pos2 {
+                        x: translated.right(),
+                        y: y_1,
+                    };
+                    let size = Vec2::splat(16.0);
+                    let left_rect = Rect::from_center_size(l_point, size);
+                    let right_rect = Rect::from_center_size(r_point, size);
+                    let left_rect_id = response.id.with(8);
+                    let right_rect_id = response.id.with(9);
+                    let left_response = ui
+                        .interact(left_rect, left_rect_id, Sense::drag())
+                        .on_hover_and_drag_cursor(ResizeVertical);
+                    let right_response = ui
+                        .interact(right_rect, right_rect_id, Sense::drag())
+                        .on_hover_and_drag_cursor(ResizeVertical);
+                    // if we drag the left coord, change the y-intercept and the slope
+                    *y_int += left_response.drag_delta().y;
+                    // the slope is now (y_1 + right) - (y_0 + left) / rect.width()
+                    *slope = ((y_1 + right_response.drag_delta().y)
+                        - (y_0 + left_response.drag_delta().y))
+                        / translated.width();
+            }
+        }
+    }
+
     // sense drags around the bbox
     fn drag_bbox(
         &mut self,
         offset: Vec2,
         elt: &InternalID,
         ui: &mut egui::Ui,
-        response: egui::Response,
+        response: &egui::Response,
     ) {
         if let Some(node) = self.internal_ocr_tree.borrow_mut().get_mut_node(&elt) {
             if let Some(OCRProperty::BBox(bbox)) = node.ocr_properties.get_mut("bbox") {
@@ -610,7 +668,8 @@ impl HOCREditor {
                 if self.selected_id.borrow().is_some() {
                     let elt = self.selected_id.borrow().unwrap();
                     let offset = response.rect.min.to_vec2();
-                    self.drag_bbox(offset, &elt, ui, response);
+                    self.drag_bbox(offset, &elt, ui, &response);
+                    self.drag_baseline(offset, &elt, ui, &response);
                     self.draw_bbox(offset, &elt, ui);
                     self.draw_baseline(offset, &elt, ui);
                     // only draw siblings if we are selecting
@@ -681,33 +740,17 @@ impl HOCREditor {
 fn render_property(prop: &mut OCRProperty, ui: &mut egui::Ui) {
     match prop {
         OCRProperty::BBox(Rect {
-                              min: Pos2 { x: min_x, y: min_y },
-                              max: Pos2 { x: max_x, y: max_y },
-                          }) => {
+            min: Pos2 { x: min_x, y: min_y },
+            max: Pos2 { x: max_x, y: max_y },
+        }) => {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(min_x)
-                            .speed(0.1)
-                            .prefix("tl x: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(min_y)
-                            .speed(0.1)
-                            .prefix("tl y: "),
-                    );
+                    ui.add(egui::DragValue::new(min_x).speed(0.1).prefix("tl x: "));
+                    ui.add(egui::DragValue::new(min_y).speed(0.1).prefix("tl y: "));
                 });
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(max_x)
-                            .speed(0.1)
-                            .prefix("br x: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(max_y)
-                            .speed(0.1)
-                            .prefix("br y: "),
-                    );
+                    ui.add(egui::DragValue::new(max_x).speed(0.1).prefix("br x: "));
+                    ui.add(egui::DragValue::new(max_y).speed(0.1).prefix("br y: "));
                 });
             });
         }
@@ -729,7 +772,7 @@ fn render_property(prop: &mut OCRProperty, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 ui.add(
                     egui::DragValue::new(slope)
-                        .speed(0.1)
+                        .speed(0.005)
                         .prefix("baseline slope: "),
                 );
                 ui.add(
@@ -741,16 +784,8 @@ fn render_property(prop: &mut OCRProperty, ui: &mut egui::Ui) {
         }
         OCRProperty::ScanRes(dpi, dpi2) => {
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::DragValue::new(dpi)
-                        .speed(0.1)
-                        .prefix("dpi: "),
-                );
-                ui.add(
-                    egui::DragValue::new(dpi2)
-                        .speed(0.1)
-                        .prefix("also dpi?: "),
-                );
+                ui.add(egui::DragValue::new(dpi).speed(0.1).prefix("dpi: "));
+                ui.add(egui::DragValue::new(dpi2).speed(0.1).prefix("also dpi?: "));
             });
         }
     };
